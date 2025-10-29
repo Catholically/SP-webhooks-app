@@ -1,216 +1,268 @@
+// api/webhooks/orders-updated.ts
+// Runtime: Vercel/Next API route or Remix/Route module on Node 18+
+// Dipendenze esterne: nessuna. Se hai helper di Shopify (es. authenticate.admin) vedi TODO più sotto.
+
 import type { NextApiRequest, NextApiResponse } from "next";
-import crypto from "crypto";
 
-export const config = { api: { bodyParser: false } };
-const API_VER = "2025-10";
+/**
+ * ENV richieste:
+ * - SPRO_API_BASE = https://www.spedirepro.com/public-api/v1
+ * - SPRO_API_TOKEN = <Bearer token>
+ * - SPRO_TRIGGER_TAG = <es. ROME-WH o MILAN-WH o SPRO-CREATE>
+ * - SHOPIFY_WEBHOOK_SECRET = <facoltativo, per verifica HMAC>
+ */
+const SPRO_BASE =
+  process.env.SPRO_API_BASE?.replace(/\/+$/, "") ||
+  "https://www.spedirepro.com/public-api/v1";
+const SPRO_TOKEN = process.env.SPRO_API_TOKEN || "";
+const TRIGGER_TAG = (process.env.SPRO_TRIGGER_TAG || "SPRO-CREATE").toLowerCase();
 
-/* ---------------- HMAC Shopify ---------------- */
-function verifyHmac(raw: string, hmac: string, secret: string) {
-  const digest = crypto.createHmac("sha256", secret).update(raw, "utf8").digest("base64");
-  try { return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac || "")); }
-  catch { return false; }
+type ShopifyAddress = {
+  first_name?: string;
+  last_name?: string;
+  name?: string;
+  address1?: string;
+  address2?: string;
+  city?: string;
+  province?: string;
+  zip?: string;
+  country?: string;
+  phone?: string;
+};
+
+type ShopifyOrder = {
+  id: number;
+  name: string;
+  tags?: string;
+  email?: string;
+  currency?: string;
+  total_weight?: number; // in grams
+  line_items: Array<{
+    id: number;
+    title: string;
+    quantity: number;
+    grams: number; // per unit, grams
+    sku?: string;
+    product_exists?: boolean;
+    product_id?: number;
+    vendor?: string;
+    price: string;
+    product_type?: string;
+    name?: string;
+  }>;
+  shipping_address?: ShopifyAddress;
+};
+
+function hasTriggerTag(tags?: string): boolean {
+  if (!tags) return false;
+  return tags
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .some((t) => t === TRIGGER_TAG);
 }
 
-/* ---------------- Utils ---------------- */
-function toKg(grams?: number) {
-  const g = Number(grams || 0);
-  const kg = g > 0 ? g / 1000 : 0.05;
-  return Math.max(0.01, Number(kg.toFixed(3)));
+function selectItems(order: ShopifyOrder) {
+  // Esclusioni note: Product type "UPS", "Insurance", Product name "TIP"
+  const EXCLUDED_TYPES = new Set(["ups", "insurance"]);
+  const EXCLUDED_NAMES = new Set(["tip"]);
+
+  return order.line_items.filter((li) => {
+    const pt = (li.product_type || "").trim().toLowerCase();
+    const nm = (li.name || li.title || "").trim().toLowerCase();
+    if (EXCLUDED_TYPES.has(pt)) return false;
+    if (EXCLUDED_NAMES.has(nm)) return false;
+    return true;
+  });
 }
-function defaultParcel(order: any) {
-  const totalGrams =
-    (order?.line_items || []).reduce((s: number, it: any) => s + (it.grams || 0), 0) ||
-    order?.total_weight || 0;
-  // spedirepro public-api usa weight in KG e dimensioni in CM (assunti standard)
-  return { width: 8, height: 3, depth: 7, weight: Math.max(1, Math.round(toKg(totalGrams))) };
+
+function gramsToKg(grams?: number) {
+  const g = Math.max(0, grams || 0);
+  return +(g / 1000).toFixed(3);
 }
-function needsCustoms(destCountry?: string) {
-  const from = (process.env.SENDER_COUNTRY || "IT").toUpperCase();
-  return String(destCountry || "").toUpperCase() !== from;
-}
-async function safeFetch(url: string, init?: RequestInit) {
-  try { return await fetch(url, init); }
-  catch (err: any) {
-    console.error("FETCH_ERROR", url, err?.cause?.code || err?.message || String(err));
+
+async function sproFetch<T = any>(
+  path: string,
+  init: RequestInit & { retryOn404?: boolean } = {}
+): Promise<T> {
+  if (!SPRO_TOKEN) throw new Error("Missing SPRO_API_TOKEN");
+  const url = `${SPRO_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${SPRO_TOKEN}`,
+    ...(init.headers || {}),
+  };
+  const res = await fetch(url, { ...init, headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const err = new Error(
+      `SPRO ${path} failed: ${res.status} ${res.statusText} ${text ? "- " + text : ""}`
+    );
+    // Log sintetico
+    console.error(`[SPRO] ${err.message}`);
     throw err;
   }
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return (await res.json()) as T;
+  // per compatibilità se l'API restituisse HTML o altro
+  // @ts-ignore
+  return (await res.text()) as T;
 }
 
-/* ---------------- SpedirePro (public-api) ----------------
-   BASE: https://www.spedirepro.com/public-api
-   Auth: header X-Api-Key
-   Endpoints: POST /v1/get-quotes  |  POST /v1/create-label
----------------------------------------------------------- */
-async function createLabelForOrder(order: any) {
-  const base   = process.env.SPEDIREPRO_BASE!;   // es. https://www.spedirepro.com/public-api
-  const apikey = process.env.SPEDIREPRO_APIKEY!;
-  const to = order.shipping_address || {};
-  const pkg = defaultParcel(order);
-
-  // 1) quote (valida payload e recupera id tariffa)
-  const quotePayload = {
-    from: {
-      country: process.env.SENDER_COUNTRY || "IT",
-      city:    process.env.SENDER_CITY || "Roma",
-      postcode: process.env.SENDER_ZIP || "00100",
-    },
-    to: {
-      country: to.country_code,
-      city:    to.city,
-      postcode: to.zip,
-    },
-    packages: [pkg],
-  };
-  const q = await safeFetch(`${base}/v1/get-quotes`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Api-Key": apikey },
-    body: JSON.stringify(quotePayload),
-  });
-  if (!q.ok) throw new Error(`get-quotes failed: ${q.status}`);
-  const quotes = await q.json();
-  const best = Array.isArray(quotes) ? quotes[0] : undefined;
-  if (!best?.id) throw new Error("no quotes returned");
-
-  // 2) create-label
-  const createPayload: any = {
-    merchant_reference: String(order.name || order.id),
-    include_return_label: false,
-    book_pickup: false,
-    courier_fallback: true,
-    sender: {
-      name: process.env.SENDER_NAME || "Catholically",
-      country: process.env.SENDER_COUNTRY || "IT",
-      city: process.env.SENDER_CITY || "Roma",
-      postcode: process.env.SENDER_ZIP || "00100",
-      province: process.env.SENDER_PROV || "RM",
-      street: process.env.SENDER_ADDR1 || "",
-      email: process.env.SENDER_EMAIL || "",
-      phone: process.env.SENDER_PHONE || "",
-    },
-    receiver: {
-      name: `${to.first_name || ""} ${to.last_name || ""}`.trim() || "Receiver",
-      country: to.country_code,
-      city: to.city,
-      postcode: to.zip,
-      province: to.province_code || to.province || "",
-      street: to.address1 || "",
-      email: order.email || "",
-      phone: to.phone || order.phone || "",
-    },
-    packages: [pkg],
-    quote_id: best.id, // usa la tariffa migliore restituita da get-quotes
-  };
-
-  if (needsCustoms(to.country_code)) {
-    createPayload.customs_items = [
-      { description: "Religious articles", quantity: 1, value: 12.0, hs_code: "7117.19", weight: 0.02 }
-    ];
-    createPayload.customs_incoterm = "DDU";
-    createPayload.customs_currency = "EUR";
+/**
+ * 1) Ottiene i preventivi
+ *   - tenta /get-quotes
+ *   - fallback a /simulation se necessario
+ */
+async function getBestQuote(payload: any) {
+  try {
+    const quotes = await sproFetch<any>("/get-quotes", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const list = Array.isArray(quotes?.rates) ? quotes.rates : quotes;
+    if (!Array.isArray(list) || list.length === 0) throw new Error("No quotes");
+    // scegli il più economico
+    list.sort((a: any, b: any) => Number(a.total) - Number(b.total));
+    return list[0];
+  } catch (e: any) {
+    // fallback a /simulation
+    const sim = await sproFetch<any>("/simulation", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    const list = Array.isArray(sim?.rates) ? sim.rates : sim;
+    if (!Array.isArray(list) || list.length === 0) throw new Error("No simulation rates");
+    list.sort((a: any, b: any) => Number(a.total) - Number(b.total));
+    return list[0];
   }
+}
 
-  const res = await safeFetch(`${base}/v1/create-label`, {
+/**
+ * 2) Crea spedizione
+ */
+async function createShipment(payload: any) {
+  const created = await sproFetch<any>("/create", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Api-Key": apikey },
-    body: JSON.stringify(createPayload),
-  });
-  if (!res.ok) throw new Error(`create-label failed: ${res.status}`);
-  const out = await res.json();
-
-  const tracking    = out?.tracking_number || out?.tracking || out?.data?.tracking;
-  const labelUrl    = out?.label?.url || out?.label_url || out?.data?.label_url;
-  const trackingUrl = out?.tracking_url || out?.data?.tracking_url || null;
-  if (!tracking || !labelUrl) throw new Error("missing tracking/labelUrl");
-
-  return { tracking, trackingUrl, labelUrl };
-}
-
-/* ---------------- Shopify Admin REST ---------------- */
-const SHOP = process.env.SHOPIFY_ADMIN_DOMAIN!;
-const AT   = process.env.SHOPIFY_ADMIN_TOKEN!;
-async function shopifyGetOrder(id: number) {
-  const r = await safeFetch(`https://${SHOP}/admin/api/${API_VER}/orders/${id}.json`, {
-    headers: { "X-Shopify-Access-Token": AT },
-  });
-  if (!r.ok) throw new Error(`shopify get order failed: ${r.status}`);
-  return (await r.json()).order;
-}
-async function shopifyPutOrderTags(id: number, tags: string[]) {
-  const r = await safeFetch(`https://${SHOP}/admin/api/${API_VER}/orders/${id}.json`, {
-    method: "PUT",
-    headers: { "X-Shopify-Access-Token": AT, "Content-Type": "application/json" },
-    body: JSON.stringify({ order: { id, tags: tags.join(", ") } }),
-  });
-  if (!r.ok) throw new Error(`shopify put order failed: ${r.status}`);
-}
-async function shopifyCreateOrderMetafield(orderId: number, data: any) {
-  const payload = {
-    metafield: {
-      owner_id: orderId,
-      owner_resource: "order",
-      namespace: "shipping",
-      key: "label_info",
-      type: "json",
-      value: JSON.stringify(data),
-    },
-  };
-  const r = await safeFetch(`https://${SHOP}/admin/api/${API_VER}/metafields.json`, {
-    method: "POST",
-    headers: { "X-Shopify-Access-Token": AT, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!r.ok) throw new Error(`shopify metafield failed: ${r.status}`);
+  return created;
 }
 
-/* ---------------- Handler ---------------- */
+/**
+ * Costruisce payload SPRO dagli order Shopify
+ */
+function buildSproPayload(order: ShopifyOrder) {
+  const addr = order.shipping_address || {};
+  const items = selectItems(order);
+
+  const totalGrams = items.reduce((s, li) => s + (li.grams || 0) * (li.quantity || 0), 0);
+  const weightKg = gramsToKg(totalGrams || order.total_weight || 0) || 0.1; // default 0.1 kg
+
+  return {
+    merchant_reference: order.name, // es. "#1001"
+    reference: String(order.id),
+    recipient: {
+      name:
+        addr.name ||
+        [addr.first_name, addr.last_name].filter(Boolean).join(" ").trim() ||
+        "Customer",
+      address1: addr.address1 || "",
+      address2: addr.address2 || "",
+      city: addr.city || "",
+      province: addr.province || "",
+      postcode: addr.zip || "",
+      country: addr.country || "",
+      phone: addr.phone || "",
+      email: order.email || "",
+    },
+    // pacco unico con peso totale
+    parcel: {
+      weight: weightKg, // kg
+      length: 22, // cm default
+      width: 16,
+      height: 4,
+    },
+    // dettagli merce per dogana
+    contents: items.map((li) => ({
+      description: li.title,
+      quantity: li.quantity,
+      sku: li.sku || String(li.id),
+      unit_price: Number(li.price || 0),
+      weight: gramsToKg((li.grams || 0) * (li.quantity || 0)),
+    })),
+    // opzionali a seconda del tuo account
+    // incoterm, insurance, notes, ecc.
+  };
+}
+
+/**
+ * TODO Shopify Fulfillment:
+ * Se nel tuo progetto hai un helper tipo `authenticate.admin`,
+ * sposta qui la creazione del fulfillment e salvataggio metafield.
+ * Qui metto solo stub lato log.
+ */
+async function fulfillOnShopify(_order: ShopifyOrder, sproResult: any) {
+  const tracking = sproResult?.tracking || "";
+  const tracking_url =
+    sproResult?.tracking_url ||
+    sproResult?.label?.tracking_url ||
+    sproResult?.label?.link ||
+    "";
+  const labelUrl = sproResult?.label?.url || sproResult?.label?.link || "";
+
+  console.log(
+    `[SHOPIFY] ready to fulfill ${_order.name} tracking=${tracking} url=${tracking_url} label=${labelUrl}`
+  );
+
+  // Esempio con REST Admin (pseudocodice):
+  // const { admin } = await authenticate.admin(request, { isOnline: false });
+  // await admin.rest.post({
+  //   path: "/fulfillments.json",
+  //   data: { fulfillment: { order_id: _order.id, tracking_number: tracking, tracking_url, notify_customer: true } },
+  // });
+  // await admin.rest.post({
+  //   path: `/orders/${_order.id}/metafields.json`,
+  //   data: { metafield: { namespace: "shipping", key: "label_url", type: "single_line_text_field", value: labelUrl } }
+  // });
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") {
+    res.status(405).json({ ok: false, error: "Method not allowed" });
+    return;
+  }
+
   try {
-    if (req.method !== "POST") return res.status(404).end("Not Found");
-
-    // RAW body per HMAC
-    const raw = await new Promise<string>((resolve, reject) => {
-      let data = ""; req.on("data", c => data += c);
-      req.on("end", () => resolve(data));
-      req.on("error", reject);
-    });
-
-    // Verifica HMAC
-    const hmac = req.headers["x-shopify-hmac-sha256"] as string;
-    if (!verifyHmac(raw, hmac, process.env.SHOPIFY_WEBHOOK_SECRET || "")) {
-      return res.status(401).end("unauthorized");
+    // Se vuoi verificare HMAC di Shopify, aggiungi qui la verifica con SHOPIFY_WEBHOOK_SECRET.
+    const order = req.body as ShopifyOrder;
+    if (!order || !order.id) {
+      res.status(200).json({ ok: true, skipped: "no-order" });
+      return;
     }
 
-    // Evento ordine
-    const ev = JSON.parse(raw);
-    const orderId = Number(ev.id);
-    const name = String(ev.name || "");
-    const tags = String(ev.tags || "").split(",").map((t: string) => t.trim()).filter(Boolean);
+    if (!hasTriggerTag(order.tags)) {
+      res.status(200).json({ ok: true, skipped: "no-trigger-tag" });
+      return;
+    }
 
-    const hasTrigger = tags.includes("CREATE-LABEL");
-    const alreadyDone = tags.includes("LABEL-DONE");
-    if (!hasTrigger || alreadyDone) return res.status(200).json({ ok: true, skipped: true });
+    const sproPayload = buildSproPayload(order);
 
-    // 1) Crea etichetta su SpedirePro
-    const label = await createLabelForOrder(ev);
+    // 1) preventivi
+    const bestRate = await getBestQuote(sproPayload);
+    console.log("[SPRO] selected rate:", bestRate?.service || bestRate?.carrier || "unknown");
 
-    // 2) Scrivi metafield
-    await shopifyCreateOrderMetafield(orderId, {
-      tracking: label.tracking,
-      tracking_url: label.trackingUrl,
-      label_url: label.labelUrl,
-      source: "spedirepro",
-      order_name: name,
-    });
+    // 2) crea spedizione
+    const createPayload = {
+      ...sproPayload,
+      service: bestRate?.service || bestRate?.code || undefined,
+      carrier: bestRate?.carrier || undefined,
+      total: bestRate?.total || undefined,
+    };
+    const created = await createShipment(createPayload);
 
-    // 3) Aggiungi LABEL-DONE (idempotenza)
-    const fresh = await shopifyGetOrder(orderId);
-    const nowTags: string[] = String(fresh.tags || "").split(",").map((t: string) => t.trim()).filter(Boolean);
-    const newTags = Array.from(new Set([...nowTags, "LABEL-DONE"]));
-    await shopifyPutOrderTags(orderId, newTags);
+    // 3) fulfillment Shopify
+    await fulfillOnShopify(order, created);
 
-    return res.status(200).json({ ok: true, tracking: label.tracking, label_url: label.labelUrl });
+    res.status(200).json({ ok: true, created });
   } catch (err: any) {
-    console.error("WEBHOOK ERROR", err?.message || err, err?.stack);
-    return res.status(500).json({ ok: false, error: String(err?.message || err) });
-  }
-}
+    // Mappa errori frequenti
