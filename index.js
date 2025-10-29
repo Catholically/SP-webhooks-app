@@ -5,9 +5,11 @@ app.use(express.json());
 
 app.post('/webhook', (req, res) => {
   console.log('Webhook ricevuto:', req.body);
-  res.json({ success: true });
+  res.status(200).json({ success: true });
 });
 
-app.listen(3000, () => {
-  console.log('Server in ascolto sulla porta 3000');
+app.get('/', (req, res) => {
+  res.status(200).json({ message: 'Server OK' });
 });
+
+module.exports = app;
