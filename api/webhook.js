@@ -40,17 +40,36 @@ export default async function handler(req, res) {
     const txt = await resp.text();
     if (!resp.ok) return res.status(502).json({ ok:false, step:"create_fulfillment", status:resp.status, body:txt });
 
-    // 4) opzionale: salva link etichetta in nota
-    if (w.label && (w.label.url || w.label.link)) {
-      await fetch(`${adminBase}/orders/${order.id}.json`, {
-        method:"PUT",
-        headers:{ "X-Shopify-Access-Token": token, "Content-Type":"application/json" },
-        body: JSON.stringify({ order:{ id: order.id, note: `Label: ${w.label.url || w.label.link}` } })
+// 4) salva la label nel metafield ordine (namespace spedirepro, key ldv_url, type url)
+if (w.label && (w.label.url || w.label.link)) {
+  const value = w.label.url || w.label.link;
+
+  // tenta create
+  let r = await fetch(`${adminBase}/orders/${order.id}/metafields.json`, {
+    method: "POST",
+    headers: { "X-Shopify-Access-Token": token, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      metafield: {
+        namespace: "spedirepro",
+        key: "ldv_url",
+        type: "url",
+        value
+      }
+    })
+  });
+
+  if (!r.ok) {
+    // se esiste già, fai update
+    const list = await fetch(`${adminBase}/orders/${order.id}/metafields.json?namespace=spedirepro&key=ldv_url`, {
+      headers: { "X-Shopify-Access-Token": token }
+    }).then(x => x.json());
+    const mf = (list.metafields || [])[0];
+    if (mf?.id) {
+      await fetch(`${adminBase}/metafields/${mf.id}.json`, {
+        method: "PUT",
+        headers: { "X-Shopify-Access-Token": token, "Content-Type": "application/json" },
+        body: JSON.stringify({ metafield: { id: mf.id, value, type: "url" } })
       });
     }
-
-    return res.status(200).json({ ok:true });
-  } catch (e) {
-    return res.status(500).json({ ok:false, error:String(e?.message||e) });
   }
 }
