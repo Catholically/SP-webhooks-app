@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     };
 
     // 3) SPRO → create label
-    const sproResp = await fetch(`${process.env.SPRO_API_BASE}/v1/create-label`, {
+    const sproResp = await fetch(`${process.env.SPRO_API_BASE}/create-label`, {
       method: "POST",
       headers: { "X-Api-Key": process.env.SPRO_API_KEY, "Content-Type": "application/json" },
       body: JSON.stringify(payload)
