@@ -2,11 +2,11 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 
 /**
- * ENV:
+ * ENV richieste:
  * - SPRO_API_BASE=https://www.spedirepro.com/public-api/v1
- * - SPRO_API_TOKEN=<chiave API di SpedirePro>
+ * - SPRO_API_TOKEN=<chiave API SpedirePro>
  * - SPRO_TRIGGER_TAG=SPRO-CREATE
- * - SPRO_WEBHOOK_TOKEN=<opzionale, per validare query ?token=...>
+ * - SPRO_WEBHOOK_TOKEN=<opzionale, per sicurezza query ?token=...>
  */
 
 const SPRO_BASE =
@@ -18,7 +18,7 @@ const SPRO_TOKEN = process.env.SPRO_API_TOKEN || "";
 const TRIGGER_TAG = String(process.env.SPRO_TRIGGER_TAG || "SPRO-CREATE").toLowerCase();
 const INBOUND_TOKEN = process.env.SPRO_WEBHOOK_TOKEN || "";
 
-// ---- Tipi essenziali Shopify ----
+// ---- Tipi Shopify ----
 type ShopifyAddress = {
   first_name?: string;
   last_name?: string;
@@ -38,12 +38,12 @@ type ShopifyOrder = {
   tags?: string;
   email?: string;
   currency?: string;
-  total_weight?: number; // grams
+  total_weight?: number;
   line_items: Array<{
     id: number;
     title: string;
     quantity: number;
-    grams: number; // per unit, grams
+    grams: number;
     sku?: string;
     product_type?: string;
     price: string;
@@ -67,7 +67,6 @@ function gramsToKg(grams?: number) {
 }
 
 function selectItems(order: ShopifyOrder) {
-  // Escludi servizi non spedibili
   const EXCLUDED_TYPES = new Set(["ups", "insurance"]);
   const EXCLUDED_NAMES = new Set(["tip"]);
   return order.line_items.filter((li) => {
@@ -85,7 +84,7 @@ async function sproFetch<T = any>(path: string, init: RequestInit = {}): Promise
   const headers = {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "X-Api-Key": SPRO_TOKEN, // Autenticazione corretta
+    "X-Api-Key": SPRO_TOKEN,
     ...(init.headers || {}),
   };
   const res = await fetch(url, { ...init, headers });
@@ -102,6 +101,7 @@ async function sproFetch<T = any>(path: string, init: RequestInit = {}): Promise
   }
 }
 
+// ---- Costruzione payload ----
 function buildCreateLabelPayload(order: ShopifyOrder) {
   const addr = order.shipping_address || {};
   const items = selectItems(order);
@@ -109,13 +109,24 @@ function buildCreateLabelPayload(order: ShopifyOrder) {
     (s, li) => s + (Number(li.grams || 0) * Number(li.quantity || 0)),
     0
   );
-  const weightKg = gramsToKg(totalGrams || order.total_weight || 0) || 0.1; // default minimo
+  const weightKg = gramsToKg(totalGrams || order.total_weight || 0) || 0.1;
 
   return {
-    merchant_reference: order.name, // es. "#1001"
+    merchant_reference: order.name,
     include_return_label: false,
     courier_fallback: true,
     book_pickup: false,
+    // mittente obbligatorio
+    sender: {
+      name: "Catholically",
+      address1: "Via di Porta Angelica 23",
+      city: "Roma",
+      province: "RM",
+      postcode: "00193",
+      country: "IT",
+      phone: "+3906123456",
+      email: "info@catholically.com",
+    },
     recipient: {
       name:
         addr.name ||
@@ -131,7 +142,7 @@ function buildCreateLabelPayload(order: ShopifyOrder) {
       email: order.email || "",
     },
     parcel: {
-      weight: weightKg, // kg
+      weight: weightKg,
       length: 22,
       width: 16,
       height: 4,
@@ -146,8 +157,8 @@ function buildCreateLabelPayload(order: ShopifyOrder) {
   };
 }
 
-// Stub: integra con il tuo Admin Shopify
-async function fulfillOnShopify(_order: ShopifyOrder, created: any) {
+// Stub fulfillment Shopify
+async function fulfillOnShopify(order: ShopifyOrder, created: any) {
   const tracking =
     created?.tracking ||
     created?.label?.tracking_number ||
@@ -161,19 +172,8 @@ async function fulfillOnShopify(_order: ShopifyOrder, created: any) {
   const labelUrl = created?.label?.url || created?.label?.link || "";
 
   console.log(
-    `[SHOPIFY] ready to fulfill ${_order.name} tracking=${tracking} url=${tracking_url} label=${labelUrl}`
+    `[SHOPIFY] ready to fulfill ${order.name} tracking=${tracking} url=${tracking_url} label=${labelUrl}`
   );
-
-  // Esempio:
-  // const { admin } = await authenticate.admin(request, { isOnline: false });
-  // await admin.rest.post({
-  //   path: "/fulfillments.json",
-  //   data:{ fulfillment:{ order_id: _order.id, tracking_number: tracking, tracking_url, notify_customer:true } }
-  // });
-  // await admin.rest.post({
-  //   path: `/orders/${_order.id}/metafields.json`,
-  //   data:{ metafield:{ namespace:"shipping", key:"label_url", type:"single_line_text_field", value: labelUrl } }
-  // });
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -182,7 +182,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
-  // opzionale: token in query per webhook inbound
   if (INBOUND_TOKEN) {
     const q = String(req.query?.token || "");
     if (q && q !== INBOUND_TOKEN) {
@@ -213,7 +212,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       country: payload.recipient.country,
     });
 
-    // Creazione etichetta: API ufficiale
     const created = await sproFetch<any>("/create-label", {
       method: "POST",
       body: JSON.stringify(payload),
