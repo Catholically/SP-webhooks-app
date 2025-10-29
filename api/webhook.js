@@ -6,17 +6,3 @@ xexport default function handler(req, res) {
     res.status(405).json({ error: 'Method not allowed' });
   }
 }
-```
-
-Salva.
-
-Poi fai push:
-```
-git add .
-git commit -m "Use Vercel API routes"
-git push
-```
-
-Aspetta 2 minuti e prova:
-```
-Invoke-WebRequest -Uri "https://webhooks.catholically.com/api/webhook" -Method POST -ContentType "application/json" -Body '{"test":"ciao"}'
