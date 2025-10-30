@@ -2,14 +2,37 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 
 export const config = {
-  api: { bodyParser: true }, // forza il JSON parser di Next
+  api: { bodyParser: false }, // leggiamo il raw body a mano
 };
 
 const SHOP = process.env.SHOPIFY_SHOP!;
 const SHOP_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
 const EXPECTED_TOKEN = process.env.SPRO_WEBHOOK_TOKEN || "";
 
-// ---- utils
+// --- utils ---
+function getToken(req: NextApiRequest) {
+  return String(
+    (req.query?.token as string) ||
+    req.headers["x-webhook-token"] ||
+    ""
+  );
+}
+
+async function readRawBody(req: NextApiRequest): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function safeJsonParse(text: string): any {
+  if (!text) return {};
+  try { return JSON.parse(text); }
+  catch { throw new Error("Invalid JSON"); }
+}
+
 async function shopifyAdmin(path: string, init: RequestInit = {}) {
   if (!SHOP || !SHOP_TOKEN) throw new Error("Missing SHOPIFY env");
   const url = `https://${SHOP}/admin/api/2024-10${path.startsWith("/") ? "" : "/"}${path}`;
@@ -28,73 +51,49 @@ async function shopifyAdmin(path: string, init: RequestInit = {}) {
   return txt ? JSON.parse(txt) : {};
 }
 
-function getToken(req: NextApiRequest) {
-  return String(
-    (req.query?.token as string) ||
-    req.headers["x-webhook-token"] ||
-    ""
-  );
-}
-
-function safeParseBody(req: NextApiRequest): any {
-  // Se Next ha già parsato, req.body è un object
-  const b: any = (req as any).body;
-  if (!b) return {};
-  if (typeof b === "object" && !Buffer.isBuffer(b)) return b;
-  if (typeof b === "string") {
-    try { return JSON.parse(b); } catch { throw new Error("Invalid JSON"); }
-  }
-  // Buffer o altro: prova a convertire
-  try {
-    const text = Buffer.isBuffer(b) ? b.toString("utf8") : String(b);
-    return text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error("Invalid JSON");
-  }
-}
-
-// ---- handler
+// --- handler ---
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // healthcheck
+  // Healthcheck semplice anche per GET
   if (req.method === "GET") return res.status(200).json({ ok: true, ping: "spedirepro" });
 
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "method not allowed" });
 
-  try {
-    // auth
-    const token = getToken(req);
-    if (!EXPECTED_TOKEN || token !== EXPECTED_TOKEN) {
-      return res.status(401).json({ ok: false, error: "unauthorized" });
-    }
+  // Auth
+  const token = getToken(req);
+  if (!EXPECTED_TOKEN || token !== EXPECTED_TOKEN) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
 
-    // parse body
-    let w: any;
+  try {
+    // Leggi raw e prova parse JSON
+    const raw = await readRawBody(req);
+    let payload: any = {};
     try {
-      w = safeParseBody(req);
+      payload = safeJsonParse(raw);
     } catch (e: any) {
-      console.error("[SPRO-WH] parse error", e?.message);
-      return res.status(500).json({ ok: false, error: "Invalid JSON" });
+      console.error("[SPRO-WH] parse error:", e?.message, "raw:", raw);
+      return res.status(200).json({ ok: true, skipped: "invalid-json", raw: raw?.slice(0,200) || "" });
     }
 
     console.log("[SPRO-WH] headers", req.headers);
-    console.log("[SPRO-WH] body", JSON.stringify(w).slice(0, 2000));
+    console.log("[SPRO-WH] body", JSON.stringify(payload).slice(0, 2000));
 
-    // campi principali
-    const name = String(w.merchant_reference || "").trim();
-    if (!name) return res.status(200).json({ ok: true, skipped: "no-merchant_reference" });
+    // Campi utili (tolleranti)
+    const name = String(payload.merchant_reference || "").trim();
+    const trackingNumber = payload.tracking || payload.tracking_number || "";
+    const trackingUrl = payload.tracking_url || "";
+    const labelUrl = payload?.label?.url || payload?.label?.link || "";
 
-    const trackingNumber = w.tracking || w.tracking_number || "";
-    const trackingUrl = w.tracking_url || "";
-    const labelUrl = (w.label && (w.label.url || w.label.link)) || "";
+    if (!name) {
+      return res.status(200).json({ ok: true, skipped: "no-merchant_reference" });
+    }
 
-    // trova ordine per name
-    const search: any = await shopifyAdmin("/orders.json", { method: "GET" as any, headers: {}, body: undefined, });
-    // NB: l'endpoint /orders.json con query name va così:
+    // Trova ordine per name
     const searchByName: any = await shopifyAdmin(`/orders.json?name=${encodeURIComponent(name)}`, { method: "GET" as any });
     const order = searchByName?.orders?.[0];
-    if (!order) return res.status(200).json({ ok: true, skipped: "order-not-found" });
+    if (!order) return res.status(200).json({ ok: true, skipped: "order-not-found", ref: name });
 
-    // crea fulfillment (se abbiamo almeno il tracking number)
+    // Crea fulfillment se c'è un tracking
     if (trackingNumber) {
       await shopifyAdmin("/fulfillments.json", {
         method: "POST",
@@ -109,7 +108,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    // salva url etichetta come metafield
+    // Salva URL etichetta come metafield se presente
     if (labelUrl) {
       await shopifyAdmin("/metafields.json", {
         method: "POST",
@@ -126,7 +125,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    return res.status(200).json({ ok: true, order_id: order.id, tracking: trackingNumber || null, label: labelUrl || null });
+    return res.status(200).json({
+      ok: true,
+      order_id: order.id,
+      tracking: trackingNumber || null,
+      label: labelUrl || null,
+    });
   } catch (err: any) {
     console.error("[SPRO-WH] error", err);
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
