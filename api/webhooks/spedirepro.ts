@@ -1,117 +1,134 @@
 // api/webhooks/spedirepro.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
-/** ENV richieste
- * SHOPIFY_SHOP=<mystore.myshopify.com>
- * SHOPIFY_ACCESS_TOKEN=<Admin API token>
- * SPRO_WEBHOOK_TOKEN=<facoltativo, token che SpedirePro invia in ?token=... o header X-Webhook-Token>
- */
-const SHOP = String(process.env.SHOPIFY_SHOP || "");
-const SHOP_TOKEN = String(process.env.SHOPIFY_ACCESS_TOKEN || "");
-const API_VER = "2024-10";
-const INBOUND_TOKEN = String(process.env.SPRO_WEBHOOK_TOKEN || "");
-
-async function shopifyAdmin(path:string, init:RequestInit={}){
-  if(!SHOP || !SHOP_TOKEN) throw new Error("Missing SHOPIFY_SHOP or SHOPIFY_ACCESS_TOKEN");
-  const url = `https://${SHOP}/admin/api/${API_VER}${path.startsWith("/")?"":"/"}${path}`;
-  const headers = { "X-Shopify-Access-Token": SHOP_TOKEN, "Content-Type":"application/json", Accept:"application/json", ...(init.headers||{}) };
-  const res = await fetch(url, { ...init, headers });
-  const text = await res.text().catch(()=> "");
-  if(!res.ok){ console.error(`[SHOPIFY] ${path} -> ${res.status} ${res.statusText} ${text?.slice(0,300)}`); throw new Error(`SHOPIFY ${path} failed: ${res.status}`); }
-  return text ? JSON.parse(text) : {};
-}
-
-/** SpedirePro sample body tipico:
- * {
- *   "merchant_reference": "#1002",
- *   "reference": "251030C8T000131P",
- *   "tracking": "1Z....",
- *   "tracking_url": "https://...",
- *   "label": { "url": "https://...", "link": "https://..." }
- * }
- */
-type SPROWebhook = {
-  merchant_reference?: string;
-  reference?: string;
-  tracking?: string;
-  tracking_url?: string;
-  label?: { url?: string; link?: string; tracking_url?: string };
+export const config = {
+  api: { bodyParser: true }, // forza il JSON parser di Next
 };
 
-export default async function handler(req:NextApiRequest,res:NextApiResponse){
-  if(req.method!=="POST"){ res.status(405).json({ok:false,error:"Method not allowed"}); return; }
+const SHOP = process.env.SHOPIFY_SHOP!;
+const SHOP_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
+const EXPECTED_TOKEN = process.env.SPRO_WEBHOOK_TOKEN || "";
 
-  // opzionale: verifica token in query o header
-  if(INBOUND_TOKEN){
-    const q = String(req.query?.token || "");
-    const h = String(req.headers["x-webhook-token"] || "");
-    if((q && q!==INBOUND_TOKEN) && (h && h!==INBOUND_TOKEN)){
-      res.status(401).json({ok:false,error:"unauthorized"}); return;
-    }
+// ---- utils
+async function shopifyAdmin(path: string, init: RequestInit = {}) {
+  if (!SHOP || !SHOP_TOKEN) throw new Error("Missing SHOPIFY env");
+  const url = `https://${SHOP}/admin/api/2024-10${path.startsWith("/") ? "" : "/"}${path}`;
+  const headers = {
+    "X-Shopify-Access-Token": SHOP_TOKEN,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    ...(init.headers || {}),
+  };
+  const res = await fetch(url, { ...init, headers });
+  const txt = await res.text().catch(() => "");
+  if (!res.ok) {
+    console.error(`[SHOPIFY] ${path} -> ${res.status} ${res.statusText} ${txt?.slice(0,300)}`);
+    throw new Error(`SHOPIFY ${path} failed: ${res.status}`);
   }
+  return txt ? JSON.parse(txt) : {};
+}
 
-  try{
-    const w = req.body as SPROWebhook;
-    const orderName = String(w.merchant_reference || "").trim();
-    if(!orderName){ res.status(400).json({ok:false,error:"missing merchant_reference"}); return; }
+function getToken(req: NextApiRequest) {
+  return String(
+    (req.query?.token as string) ||
+    req.headers["x-webhook-token"] ||
+    ""
+  );
+}
+
+function safeParseBody(req: NextApiRequest): any {
+  // Se Next ha già parsato, req.body è un object
+  const b: any = (req as any).body;
+  if (!b) return {};
+  if (typeof b === "object" && !Buffer.isBuffer(b)) return b;
+  if (typeof b === "string") {
+    try { return JSON.parse(b); } catch { throw new Error("Invalid JSON"); }
+  }
+  // Buffer o altro: prova a convertire
+  try {
+    const text = Buffer.isBuffer(b) ? b.toString("utf8") : String(b);
+    return text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error("Invalid JSON");
+  }
+}
+
+// ---- handler
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // healthcheck
+  if (req.method === "GET") return res.status(200).json({ ok: true, ping: "spedirepro" });
+
+  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "method not allowed" });
+
+  try {
+    // auth
+    const token = getToken(req);
+    if (!EXPECTED_TOKEN || token !== EXPECTED_TOKEN) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    // parse body
+    let w: any;
+    try {
+      w = safeParseBody(req);
+    } catch (e: any) {
+      console.error("[SPRO-WH] parse error", e?.message);
+      return res.status(500).json({ ok: false, error: "Invalid JSON" });
+    }
+
+    console.log("[SPRO-WH] headers", req.headers);
+    console.log("[SPRO-WH] body", JSON.stringify(w).slice(0, 2000));
+
+    // campi principali
+    const name = String(w.merchant_reference || "").trim();
+    if (!name) return res.status(200).json({ ok: true, skipped: "no-merchant_reference" });
+
+    const trackingNumber = w.tracking || w.tracking_number || "";
+    const trackingUrl = w.tracking_url || "";
+    const labelUrl = (w.label && (w.label.url || w.label.link)) || "";
 
     // trova ordine per name
-    const search = await shopifyAdmin(`/orders.json?name=${encodeURIComponent(orderName)}`, { method:"GET" });
-    const order = Array.isArray(search?.orders) ? search.orders[0] : undefined;
-    if(!order?.id){ res.status(200).json({ok:true,skipped:"order-not-found", name: orderName}); return; }
+    const search: any = await shopifyAdmin("/orders.json", { method: "GET" as any, headers: {}, body: undefined, });
+    // NB: l'endpoint /orders.json con query name va così:
+    const searchByName: any = await shopifyAdmin(`/orders.json?name=${encodeURIComponent(name)}`, { method: "GET" as any });
+    const order = searchByName?.orders?.[0];
+    if (!order) return res.status(200).json({ ok: true, skipped: "order-not-found" });
 
-    const trackingNumber = String(w.tracking || "").trim();
-    const trackingUrl =
-      String(w.tracking_url || w.label?.tracking_url || w.label?.link || "").trim();
-    const labelUrl = String(w.label?.url || w.label?.link || "").trim();
-
-    // crea fulfillment con tracking se presente
-    if(trackingNumber || trackingUrl){
-      await shopifyAdmin(`/fulfillments.json`, {
+    // crea fulfillment (se abbiamo almeno il tracking number)
+    if (trackingNumber) {
+      await shopifyAdmin("/fulfillments.json", {
         method: "POST",
         body: JSON.stringify({
           fulfillment: {
             order_id: order.id,
+            tracking_number: trackingNumber,
+            tracking_url: trackingUrl || undefined,
             notify_customer: true,
-            tracking_number: trackingNumber || undefined,
-            tracking_url: trackingUrl || undefined
-          }
-        })
+          },
+        }),
       });
     }
 
-    // salva metafield con label url se presente
-    if(labelUrl){
-      await shopifyAdmin(`/orders/${order.id}/metafields.json`, {
-        method: "POST",
-        body: JSON.stringify({
-          metafield: {
-            namespace: "shipping",
-            key: "label_url",
-            type: "single_line_text_field",
-            value: labelUrl
-          }
-        })
-      });
-    }
-
-    // salva anche spro.order_id se non presente
-    if(w.reference){
-      await shopifyAdmin(`/orders/${order.id}/metafields.json`, {
+    // salva url etichetta come metafield
+    if (labelUrl) {
+      await shopifyAdmin("/metafields.json", {
         method: "POST",
         body: JSON.stringify({
           metafield: {
             namespace: "spro",
-            key: "order_id",
-            type: "single_line_text_field",
-            value: String(w.reference)
-          }
-        })
+            key: "label_url",
+            type: "url",
+            value: labelUrl,
+            owner_resource: "order",
+            owner_id: order.id,
+          },
+        }),
       });
     }
 
-    res.status(200).json({ok:true, order_id: order.id});
-  }catch(err:any){
-    res.status(500).json({ok:false,error:String(err?.message||err)});
+    return res.status(200).json({ ok: true, order_id: order.id, tracking: trackingNumber || null, label: labelUrl || null });
+  } catch (err: any) {
+    console.error("[SPRO-WH] error", err);
+    return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 }
