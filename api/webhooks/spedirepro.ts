@@ -207,15 +207,17 @@ Promise<{ ok:true } | { ok:false; step:string; shopify_error:any }> {
     mutation($metafields:[MetafieldsSetInput!]!){
       metafieldsSet(metafields:$metafields){ userErrors{ message } }
     }`;
-  const metafields = [{
-    ownerId: orderId, namespace: "spro", key: "label_url", type: "single_line_text_field", value: labelUrl,
-  }];
+  const metafields = [
+    { ownerId: orderId, namespace: "spro",   key: "label_url", type: "single_line_text_field", value: labelUrl },
+    { ownerId: orderId, namespace: "custom", key: "ups_label", type: "single_line_text_field", value: labelUrl },
+  ];
   const r = await shopifyGraphQLSafe(m, { metafields });
   if (!r.ok) return { ok:false, step:"metafields-set", shopify_error:r.json ?? r.text ?? r.error };
-  const errs = pick(r.json, ["data","metafieldsSet","userErrors"]) ?? [];
+  const errs = (pick(r.json,["data","metafieldsSet","userErrors"]) ?? []);
   if (errs.length) return { ok:false, step:"metafields-set", shopify_error: errs };
   return { ok:true };
 }
+
 
 async function swapTags(orderId: string):
 Promise<{ ok:true } | { ok:false; step:string; shopify_error:any }> {
