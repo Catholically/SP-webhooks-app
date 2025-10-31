@@ -190,7 +190,7 @@ Promise<{ ok:true } | { ok:false; step:string; shopify_error:any }> {
   return { ok:true };
 }
 
-// --- latest fulfillment (no connection: plain array) ---
+// --- latest fulfillment (array, senza edges) ---
 
 async function getLatestFulfillmentId(orderId: string):
 Promise<{ ok:true; fulfillmentId:string|null } | { ok:false; step:string; shopify_error:any }> {
@@ -294,7 +294,7 @@ export default async function handler(req: NextRequest) {
   }), { status:200 });
 }
 
-// --- tracking update mutation (dopo handler per chiarezza) ---
+// --- tracking update (nuova firma: trackingInfoInput) ---
 
 async function updateFulfillmentTracking(
   fulfillmentId: string,
@@ -303,9 +303,11 @@ async function updateFulfillmentTracking(
   trackingCompany: string,
 ): Promise<{ ok:true } | { ok:false; step:string; shopify_error:any }> {
   const m = `
-    mutation($id:ID!, $info:FulfillmentTrackingInput!, $notify:Boolean!){
+    mutation($id:ID!, $trackingInfoInput:FulfillmentTrackingInfoInput!, $notify:Boolean!){
       fulfillmentTrackingInfoUpdateV2(
-        fulfillmentId:$id, trackingInfo:$info, notifyCustomer:$notify
+        fulfillmentId:$id,
+        trackingInfoInput:$trackingInfoInput,
+        notifyCustomer:$notify
       ){
         fulfillment{ id }
         userErrors{ message }
@@ -313,7 +315,7 @@ async function updateFulfillmentTracking(
     }`;
   const vars = {
     id: fulfillmentId,
-    info: { company: trackingCompany, number: trackingNumber ?? "", url: trackingUrl ?? "" },
+    trackingInfoInput: { company: trackingCompany, number: trackingNumber ?? "", url: trackingUrl ?? "" },
     notify: false,
   };
   const r = await shopifyGraphQLSafe(m, vars);
