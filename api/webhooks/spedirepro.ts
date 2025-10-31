@@ -1,6 +1,10 @@
 // api/webhooks/spedirepro.ts
 // Next.js Edge runtime
-// ENV: SHOPIFY_SHOP, SHOPIFY_ADMIN_TOKEN, DEFAULT_CARRIER_NAME, SPRO_WEBHOOK_TOKEN
+// ENV richieste:
+// SHOPIFY_SHOP=holy-trove.myshopify.com
+// SHOPIFY_ADMIN_TOKEN=shpat_...
+// DEFAULT_CARRIER_NAME=UPS
+// SPRO_WEBHOOK_TOKEN=spro_2e9c41c3b4a14c8b9f7d8a1fcd392b72
 
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
@@ -48,6 +52,12 @@ function normalizeRef(refRaw: string) {
   const numericId = /^\d+$/.test(ref) ? ref : undefined;
   const nameWithHash = hasHash ? ref : `#${name}`;
   return { name, nameWithHash, numericId };
+}
+
+function gidToNumeric(gid: string | undefined): string | null {
+  if (!gid) return null;
+  const m = gid.match(/\/(\d+)$|^gid:\/\/shopify\/\w+\/(\d+)$/);
+  return m ? (m[1] || m[2]) : null;
 }
 
 // --- find order ---
@@ -192,15 +202,12 @@ Promise<{ ok:true } | { ok:false; step:string; shopify_error:any }> {
 
 // --- latest fulfillment (array, senza edges) ---
 
-async function getLatestFulfillmentId(orderId: string):
-Promise<{ ok:true; fulfillmentId:string|null } | { ok:false; step:string; shopify_error:any }> {
+async function getLatestFulfillment(orderId: string):
+Promise<{ ok:true; id:string|null } | { ok:false; step:string; shopify_error:any }> {
   const q = `
     query($id:ID!){
       order(id:$id){
-        fulfillments{
-          id
-          createdAt
-        }
+        fulfillments{ id createdAt }
       }
     }`;
   const r = await shopifyGraphQLSafe(q, { id: orderId });
@@ -213,7 +220,34 @@ Promise<{ ok:true; fulfillmentId:string|null } | { ok:false; step:string; shopif
       if (!latest || new Date(f.createdAt) > new Date(latest.createdAt)) latest = f;
     }
   }
-  return { ok:true, fulfillmentId: latest?.id ?? null };
+  return { ok:true, id: latest?.id ?? null };
+}
+
+// --- REST update tracking (fallback stabile) ---
+
+async function updateTrackingREST(fulfillmentGid: string, number?: string, url?: string, company?: string):
+Promise<{ ok:true } | { ok:false; status:number; body:string }> {
+  const fidNum = gidToNumeric(fulfillmentGid);
+  if (!fidNum) return { ok:false, status:0, body:"cannot-parse-fulfillment-id" };
+
+  const restUrl = `https://${SHOP}/admin/api/2025-10/fulfillments/${fidNum}/update_tracking.json`;
+  const body = {
+    fulfillment: {
+      tracking_number: number ?? "",
+      tracking_url: url ?? "",
+      tracking_company: company ?? CARRIER,
+      notify_customer: false,
+    },
+  };
+
+  const res = await fetch(restUrl, {
+    method: "POST",
+    headers: { "X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) return { ok:false, status: res.status, body: text };
+  return { ok:true };
 }
 
 // --- handler ---
@@ -250,22 +284,26 @@ export default async function handler(req: NextRequest) {
   const gli = await getFulfillmentOrderLineItems(order.id);
   if (!gli.ok) return new Response(JSON.stringify({ ok:false, step:gli.step, shopify_error:gli.shopify_error }), { status:500 });
 
-  // 3) no remaining qty -> update tracking on latest fulfillment or just metafield+tags
+  // 3) no remaining qty -> update tracking via REST su ultimo fulfillment, altrimenti solo metafield+tags
   if (gli.items.length === 0) {
-    const gfid = await getLatestFulfillmentId(order.id);
-    if (!gfid.ok) return new Response(JSON.stringify({ ok:false, step:gfid.step, shopify_error:gfid.shopify_error }), { status:500 });
+    const gf = await getLatestFulfillment(order.id);
+    if (!gf.ok) return new Response(JSON.stringify({ ok:false, step:"fetch-fulfillments", shopify_error:gf.shopify_error }), { status:500 });
 
-    if (gfid.fulfillmentId) {
-      const up = await updateFulfillmentTracking(gfid.fulfillmentId, tracking, tracking_url, CARRIER);
-      if (!up.ok) return new Response(JSON.stringify({ ok:false, step:up.step, shopify_error:up.shopify_error }), { status:500 });
+    if (gf.id) {
+      const rest = await updateTrackingREST(gf.id, tracking, tracking_url, CARRIER);
+      if (!rest.ok) {
+        return new Response(JSON.stringify({ ok:false, step:"tracking-update-rest", status:rest.status, body:rest.body }), { status:500 });
+      }
       const mf = await setOrderMetafield(order.id, label?.link);
       if (!mf.ok) return new Response(JSON.stringify({ ok:false, step:mf.step, shopify_error:mf.shopify_error }), { status:500 });
       const tg = await swapTags(order.id);
       if (!tg.ok) return new Response(JSON.stringify({ ok:false, step:tg.step, shopify_error:tg.shopify_error }), { status:500 });
 
       return new Response(JSON.stringify({
-        ok:true, note:"updated-tracking-on-existing-fulfillment",
-        order:order.name, tracking, tracking_url, label_url: label?.link ?? null,
+        ok:true,
+        note:"updated-tracking-on-existing-fulfillment-rest",
+        order:order.name,
+        tracking, tracking_url, label_url: label?.link ?? null,
       }), { status:200 });
     }
 
@@ -275,8 +313,10 @@ export default async function handler(req: NextRequest) {
     if (!tg.ok) return new Response(JSON.stringify({ ok:false, step:tg.step, shopify_error:tg.shopify_error }), { status:500 });
 
     return new Response(JSON.stringify({
-      ok:true, note:"no-items-to-fulfill-and-no-fulfillment",
-      order:order.name, label_url: label?.link ?? null,
+      ok:true,
+      note:"no-items-to-fulfill-and-no-fulfillment",
+      order:order.name,
+      label_url: label?.link ?? null,
     }), { status:200 });
   }
 
@@ -290,37 +330,8 @@ export default async function handler(req: NextRequest) {
   if (!tg.ok) return new Response(JSON.stringify({ ok:false, step:tg.step, shopify_error:tg.shopify_error }), { status:500 });
 
   return new Response(JSON.stringify({
-    ok:true, order:order.name, tracking, tracking_url, label_url: label?.link ?? null,
+    ok:true,
+    order:order.name,
+    tracking, tracking_url, label_url: label?.link ?? null,
   }), { status:200 });
-}
-
-// --- tracking update (nuova firma: trackingInfoInput) ---
-
-async function updateFulfillmentTracking(
-  fulfillmentId: string,
-  trackingNumber: string | undefined,
-  trackingUrl: string | undefined,
-  trackingCompany: string,
-): Promise<{ ok:true } | { ok:false; step:string; shopify_error:any }> {
-  const m = `
-    mutation($id:ID!, $trackingInfoInput:FulfillmentTrackingInfoInput!, $notify:Boolean!){
-      fulfillmentTrackingInfoUpdateV2(
-        fulfillmentId:$id,
-        trackingInfoInput:$trackingInfoInput,
-        notifyCustomer:$notify
-      ){
-        fulfillment{ id }
-        userErrors{ message }
-      }
-    }`;
-  const vars = {
-    id: fulfillmentId,
-    trackingInfoInput: { company: trackingCompany, number: trackingNumber ?? "", url: trackingUrl ?? "" },
-    notify: false,
-  };
-  const r = await shopifyGraphQLSafe(m, vars);
-  if (!r.ok) return { ok:false, step:"tracking-update", shopify_error:r.json ?? r.text ?? r.error };
-  const errs = pick(r.json, ["data","fulfillmentTrackingInfoUpdateV2","userErrors"]) ?? [];
-  if (errs.length) return { ok:false, step:"tracking-update", shopify_error: errs };
-  return { ok:true };
 }
