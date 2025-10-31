@@ -23,7 +23,7 @@ type SpedireProWebhook = {
 };
 
 async function shopifyGraphQL<T>(query: string, variables?: Record<string, any>): Promise<T> {
-  const res = await fetch(`https://${SHOP}/admin/api/2025-01/graphql.json`, {
+  const res = await fetch(`https://${SHOP}/admin/api/2025-10/graphql.json`, {
     method: "POST",
     headers: {
       "X-Shopify-Access-Token": TOKEN,
