@@ -1,138 +1,117 @@
-// api/webhooks/spedirepro.ts
-import type { NextApiRequest, NextApiResponse } from "next";
-
-export const config = {
-  api: { bodyParser: false }, // leggiamo il raw body a mano
-};
+// api/webhooks/orders-updated.ts
+import type { NextRequest } from "next/server";
+export const config = { runtime: "edge" };
 
 const SHOP = process.env.SHOPIFY_SHOP!;
-const SHOP_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN!;
-const EXPECTED_TOKEN = process.env.SPRO_WEBHOOK_TOKEN || "";
+const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
+const SPRO_BASE = process.env.SPRO_API_BASE!;
+const SPRO_TOKEN = process.env.SPRO_API_TOKEN!;
+const DEF_DIM = (process.env.DEFAULT_DIM_CM || "20x12x5").split("x").map(Number);
+const DEF_W = Number(process.env.DEFAULT_WEIGHT_KG || "0.5");
 
-// --- utils ---
-function getToken(req: NextApiRequest) {
-  return String(
-    (req.query?.token as string) ||
-    req.headers["x-webhook-token"] ||
-    ""
-  );
-}
+const pick = (o:any,p:(string|number)[])=>p.reduce((a,k)=>a&&typeof a==="object"?a[k]:undefined,o);
 
-async function readRawBody(req: NextApiRequest): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+async function shopifyGQL(q:string, v?:Record<string,any>) {
+  const r = await fetch(`https://${SHOP}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: { "X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: q, variables: v||{} }),
   });
+  const t = await r.text(); let j:any; try{ j=JSON.parse(t);}catch{}
+  if (!r.ok || j?.errors) return { ok:false, status:r.status, j, t };
+  return { ok:true, j };
 }
 
-function safeJsonParse(text: string): any {
-  if (!text) return {};
-  try { return JSON.parse(text); }
-  catch { throw new Error("Invalid JSON"); }
+function hasTag(tags:any, tag:string){ 
+  if (Array.isArray(tags)) return tags.includes(tag);
+  if (typeof tags === "string") return tags.split(",").map(s=>s.trim()).includes(tag);
+  return false;
 }
 
-async function shopifyAdmin(path: string, init: RequestInit = {}) {
-  if (!SHOP || !SHOP_TOKEN) throw new Error("Missing SHOPIFY env");
-  const url = `https://${SHOP}/admin/api/2024-10${path.startsWith("/") ? "" : "/"}${path}`;
-  const headers = {
-    "X-Shopify-Access-Token": SHOP_TOKEN,
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    ...(init.headers || {}),
+async function sproCreateLabel(payload:{
+  merchant_reference:string;
+  to:{ name:string; address1:string; address2?:string; city:string; province?:string; zip:string; country:string; phone?:string; email?:string; };
+  parcel:{ length_cm:number; width_cm:number; height_cm:number; weight_kg:number; };
+}) {
+  const url = `${SPRO_BASE}/create-label`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Authorization": SPRO_TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const text = await res.text();
+  let json:any; try{ json = JSON.parse(text);}catch{}
+  return { ok: res.ok, status: res.status, json, text };
+}
+
+export default async function handler(req: NextRequest) {
+  if (req.method !== "POST") return new Response(JSON.stringify({ ok:false, error:"method-not-allowed" }), { status:405 });
+
+  // Shopify Order Updated webhook REST payload
+  let body:any; try { body = await req.json(); } catch { return new Response(JSON.stringify({ ok:false, error:"invalid-json" }), { status:400 }); }
+
+  const name = body?.name || body?.order_number ? `#${body.order_number}` : undefined;
+  const gid  = body?.admin_graphql_api_id;
+
+  // Leggi tag correnti
+  const tags = body?.tags ?? body?.tag_string;
+  if (!hasTag(tags, "SPRO-CREATE")) {
+    return new Response(JSON.stringify({ ok:true, skipped:"no-SPRO-CREATE" }), { status:200 });
+  }
+
+  // Prendi indirizzo di spedizione dal payload o da GQL se manca
+  let ship = body?.shipping_address;
+  if (!ship && gid) {
+    const q = `query($id:ID!){ order(id:$id){ name shippingAddress{
+      name address1 address2 city province zip countryCodeV2 phone
+    } } }`;
+    const r = await shopifyGQL(q,{ id: gid });
+    if (!r.ok) return new Response(JSON.stringify({ ok:false, step:"fetch-order-addr", shopify_error:r.j||r.t }), { status:500 });
+    ship = {
+      name: pick(r.j,["data","order","shippingAddress","name"]),
+      address1: pick(r.j,["data","order","shippingAddress","address1"]),
+      address2: pick(r.j,["data","order","shippingAddress","address2"]),
+      city: pick(r.j,["data","order","shippingAddress","city"]),
+      province: pick(r.j,["data","order","shippingAddress","province"]),
+      zip: pick(r.j,["data","order","shippingAddress","zip"]),
+      country: pick(r.j,["data","order","shippingAddress","countryCodeV2"]),
+      phone: pick(r.j,["data","order","shippingAddress","phone"]),
+    };
+  }
+  if (!ship?.address1 || !ship?.city || !ship?.zip || !ship?.country) {
+    return new Response(JSON.stringify({ ok:false, step:"missing-address", ship }), { status:400 });
+  }
+
+  const [L,W,H] = DEF_DIM;
+  const payload = {
+    merchant_reference: name || body?.name || "UNKNOWN",
+    to: {
+      name: ship.name || `${body?.shipping_first_name||""} ${body?.shipping_last_name||""}`.trim() || "Customer",
+      address1: ship.address1,
+      address2: ship.address2 || "",
+      city: ship.city,
+      province: ship.province || "",
+      zip: ship.zip,
+      country: ship.country,
+      phone: ship.phone || body?.phone || "",
+      email: body?.email || "",
+    },
+    parcel: { length_cm: L||20, width_cm: W||12, height_cm: H||5, weight_kg: isFinite(DEF_W)?DEF_W:0.5 },
   };
-  const res = await fetch(url, { ...init, headers });
-  const txt = await res.text().catch(() => "");
-  if (!res.ok) {
-    console.error(`[SHOPIFY] ${path} -> ${res.status} ${res.statusText} ${txt?.slice(0,300)}`);
-    throw new Error(`SHOPIFY ${path} failed: ${res.status}`);
-  }
-  return txt ? JSON.parse(txt) : {};
-}
 
-// --- handler ---
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Healthcheck semplice anche per GET
-  if (req.method === "GET") return res.status(200).json({ ok: true, ping: "spedirepro" });
+  const sp = await sproCreateLabel(payload);
+  if (!sp.ok) return new Response(JSON.stringify({ ok:false, step:"spro-create-label", status:sp.status, body: sp.json||sp.text }), { status:502 });
 
-  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "method not allowed" });
-
-  // Auth
-  const token = getToken(req);
-  if (!EXPECTED_TOKEN || token !== EXPECTED_TOKEN) {
-    return res.status(401).json({ ok: false, error: "unauthorized" });
+  // Swap tag: SPRO-CREATE -> SPRO-SENT
+  if (gid) {
+    const m = `
+      mutation($id:ID!){
+        add: tagsAdd(id:$id, tags:["SPRO-SENT"]){ userErrors{ message } }
+        rem: tagsRemove(id:$id, tags:["SPRO-CREATE"]){ userErrors{ message } }
+      }`;
+    const r = await shopifyGQL(m, { id: gid });
+    if (!r.ok) return new Response(JSON.stringify({ ok:false, step:"swap-tags", shopify_error:r.j||r.t }), { status:500 });
   }
 
-  try {
-    // Leggi raw e prova parse JSON
-    const raw = await readRawBody(req);
-    let payload: any = {};
-    try {
-      payload = safeJsonParse(raw);
-    } catch (e: any) {
-      console.error("[SPRO-WH] parse error:", e?.message, "raw:", raw);
-      return res.status(200).json({ ok: true, skipped: "invalid-json", raw: raw?.slice(0,200) || "" });
-    }
-
-    console.log("[SPRO-WH] headers", req.headers);
-    console.log("[SPRO-WH] body", JSON.stringify(payload).slice(0, 2000));
-
-    // Campi utili (tolleranti)
-    const name = String(payload.merchant_reference || "").trim();
-    const trackingNumber = payload.tracking || payload.tracking_number || "";
-    const trackingUrl = payload.tracking_url || "";
-    const labelUrl = payload?.label?.url || payload?.label?.link || "";
-
-    if (!name) {
-      return res.status(200).json({ ok: true, skipped: "no-merchant_reference" });
-    }
-
-    // Trova ordine per name
-    const searchByName: any = await shopifyAdmin(`/orders.json?name=${encodeURIComponent(name)}`, { method: "GET" as any });
-    const order = searchByName?.orders?.[0];
-    if (!order) return res.status(200).json({ ok: true, skipped: "order-not-found", ref: name });
-
-    // Crea fulfillment se c'è un tracking
-    if (trackingNumber) {
-      await shopifyAdmin("/fulfillments.json", {
-        method: "POST",
-        body: JSON.stringify({
-          fulfillment: {
-            order_id: order.id,
-            tracking_number: trackingNumber,
-            tracking_url: trackingUrl || undefined,
-            notify_customer: true,
-          },
-        }),
-      });
-    }
-
-    // Salva URL etichetta come metafield se presente
-    if (labelUrl) {
-      await shopifyAdmin("/metafields.json", {
-        method: "POST",
-        body: JSON.stringify({
-          metafield: {
-            namespace: "spro",
-            key: "label_url",
-            type: "url",
-            value: labelUrl,
-            owner_resource: "order",
-            owner_id: order.id,
-          },
-        }),
-      });
-    }
-
-    return res.status(200).json({
-      ok: true,
-      order_id: order.id,
-      tracking: trackingNumber || null,
-      label: labelUrl || null,
-    });
-  } catch (err: any) {
-    console.error("[SPRO-WH] error", err);
-    return res.status(500).json({ ok: false, error: String(err?.message || err) });
-  }
+  return new Response(JSON.stringify({ ok:true, note:"label-requested", order: name || body?.name, spro_response: sp.json||null }), { status:200 });
 }
