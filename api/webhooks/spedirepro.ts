@@ -223,7 +223,7 @@ Promise<{ ok:true; id:string|null } | { ok:false; step:string; shopify_error:any
   return { ok:true, id: latest?.id ?? null };
 }
 
-// --- REST update tracking (fallback stabile) ---
+// --- REST update tracking (FIX: usare tracking_info) ---
 
 async function updateTrackingREST(fulfillmentGid: string, number?: string, url?: string, company?: string):
 Promise<{ ok:true } | { ok:false; status:number; body:string }> {
@@ -231,11 +231,14 @@ Promise<{ ok:true } | { ok:false; status:number; body:string }> {
   if (!fidNum) return { ok:false, status:0, body:"cannot-parse-fulfillment-id" };
 
   const restUrl = `https://${SHOP}/admin/api/2025-10/fulfillments/${fidNum}/update_tracking.json`;
+
   const body = {
     fulfillment: {
-      tracking_number: number ?? "",
-      tracking_url: url ?? "",
-      tracking_company: company ?? CARRIER,
+      tracking_info: {
+        number: number ?? "",
+        url: url ?? "",
+        company: company ?? CARRIER,
+      },
       notify_customer: false,
     },
   };
