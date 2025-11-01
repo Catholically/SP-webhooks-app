@@ -5,12 +5,12 @@ export const config = { runtime: "edge" };
 // === ENV ===
 const SHOP  = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const SPRO_BASE  = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
+const SPRO_BASE  = process.env.SPRO_API_BASE || "https://spedirepro.com/public-api/v1"; // no www
 const SPRO_TOKEN = process.env.SPRO_API_TOKEN || ""; // solo token
 const [DEF_L, DEF_W, DEF_D] = (process.env.DEFAULT_DIM_CM || "20x12x5").split("x").map(Number);
 const DEF_WEIGHT = Number(process.env.DEFAULT_WEIGHT_KG || "0.5");
 
-// mittente fisso o da ENV se vuoi
+// Mittente fisso (personalizza o sposta in ENV)
 const SENDER = {
   name: "Catholically",
   attention_name: "",
@@ -23,9 +23,8 @@ const SENDER = {
   phone: "+39000000000",
 };
 
-// fallback email se mancante nel cliente
-const RECEIVER_FALLBACK_EMAIL =
-  process.env.RECEIVER_FALLBACK_EMAIL || SENDER.email;
+// Fallback email se il cliente non ha email nello shipping
+const RECEIVER_FALLBACK_EMAIL = process.env.RECEIVER_FALLBACK_EMAIL || SENDER.email;
 
 // === Utils ===
 const pick = (o:any,p:(string|number)[])=>p.reduce((a,k)=>a&&typeof a==="object"?a[k]:undefined,o);
@@ -43,7 +42,7 @@ function normalizeAddress(a:any){
     postcode: a.zip || a.postal_code || a.postcode || "",
     country,
     phone: a.phone || "",
-    email: a.email || "", // può essere vuoto: lo forzeremo più avanti
+    email: a.email || "", // può essere vuoto: forziamo dopo
   };
   if (!out.street || !out.city || !out.postcode || !out.country) return null;
   return out;
@@ -94,8 +93,8 @@ export default async function handler(req: NextRequest){
 
   if (!hasTag(tags,"SPRO-CREATE")) return new Response(JSON.stringify({ ok:true, skipped:"no-SPRO-CREATE"}), { status:200 });
 
-  // Email a livello ordine da REST
-  const orderLevelEmail = raw?.contact_email || raw?.email || "";
+  // Email di ordine
+  const orderLevelEmail = (raw?.contact_email || raw?.email || "").trim();
 
   // Address: shipping → billing
   let ship = normalizeAddress(raw?.shipping_address);
@@ -103,16 +102,14 @@ export default async function handler(req: NextRequest){
     const bill = raw?.billing_address ? { ...raw.billing_address, email: orderLevelEmail } : null;
     ship = normalizeAddress(bill);
   }
-
-  // Se manca l'email nello shipping, forzala con fallback
-  if (ship && (!ship.email || ship.email.trim()==="")) {
-    ship.email = orderLevelEmail || RECEIVER_FALLBACK_EMAIL;
-  }
-  if (ship && (!ship.phone || ship.phone.trim()==="")) {
-    ship.phone = SENDER.phone; // minimo valore per evitare errori futuri
-  }
-
   if (!ship) return new Response(JSON.stringify({ ok:true, skipped:"no-address", order:orderName }), { status:200 });
+
+  // Forza email e telefono del receiver con fallback forti
+  const receiverEmail = (ship.email || orderLevelEmail || RECEIVER_FALLBACK_EMAIL).trim();
+  const receiverPhone = (ship.phone || SENDER.phone).toString().trim();
+
+  // Log di controllo per evitare altri 422
+  console.log("orders-updated: receiver.email =", receiverEmail || "<EMPTY>", "receiver.phone =", receiverPhone || "<EMPTY>");
 
   // Payload conforme a "Crea spedizione"
   const payload:any = {
@@ -129,8 +126,8 @@ export default async function handler(req: NextRequest){
       province: ship.province || "",
       country: ship.country,
       street: ship.address2 ? `${ship.street}, ${ship.address2}` : ship.street,
-      email: ship.email || RECEIVER_FALLBACK_EMAIL,
-      phone: ship.phone || SENDER.phone,
+      email: receiverEmail,
+      phone: receiverPhone,
     },
     packages: [
       { width: DEF_W, height: DEF_D, depth: DEF_L, weight: DEF_WEIGHT }
