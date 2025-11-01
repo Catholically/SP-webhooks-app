@@ -2,65 +2,57 @@
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
-// === ENV base ===
+/*
+ENV richieste:
+- SHOPIFY_SHOP
+- SHOPIFY_ADMIN_TOKEN
+- SPRO_API_BASE                  es. https://www.spedirepro.com/public-api/v1
+- SPRO_API_TOKEN                 token SPRO (con o senza "Bearer ")
+- DEFAULT_PARCEL_CM              es. "20x12x5"
+- DEFAULT_WEIGHT_KG              es. "0.5"
+- SPRO_SERVICE                   opzionale, es. "UPS 5-day"
+- UPS_LABEL_NS                   default "spedirepro"
+- UPS_LABEL_KEY                  default "ldv_url"
+*/
+
 const SHOP  = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const SPRO_BASE  = process.env.SPRO_API_BASE || "https://spedirepro.com/public-api/v1";
-const SPRO_TOKEN = process.env.SPRO_API_TOKEN || ""; // solo token, senza "Bearer"
+const SPRO_BASE = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
+const SPRO_TOKEN_RAW = process.env.SPRO_API_TOKEN || "";
+const DEFAULT_PARCEL = (process.env.DEFAULT_PARCEL_CM || "20x12x5").split("x").map(n=>Number(n.trim())) as [number,number,number];
+const DEFAULT_WEIGHT = Number(process.env.DEFAULT_WEIGHT_KG || "0.5");
+const SPRO_SERVICE   = process.env.SPRO_SERVICE || "";
+const LABEL_NS       = process.env.UPS_LABEL_NS || "spedirepro";
+const LABEL_KEY      = process.env.UPS_LABEL_KEY || "ldv_url";
 
-// === Pacco default ===
-const [DEF_L, DEF_W, DEF_D] = (process.env.DEFAULT_DIM_CM || "20x12x5").split("x").map(Number);
-const DEF_WEIGHT = Number(process.env.DEFAULT_WEIGHT_KG || "0.5");
-
-// === Mittente da ENV ===
-const SENDER = {
-  name: process.env.SENDER_NAME || "",
-  attention_name: process.env.SENDER_ATTENTION || "",
-  city: process.env.SENDER_CITY || "",
-  postcode: process.env.SENDER_ZIP || "",
-  province: process.env.SENDER_PROV || "",
-  country: process.env.SENDER_COUNTRY || "",
-  street: [process.env.SENDER_ADDR1, process.env.SENDER_ADDR2].filter(Boolean).join(", "),
-  email: process.env.SENDER_EMAIL || "",
-  phone: process.env.SENDER_PHONE || "",
-} as const;
-
-const REQUIRED_SENDER_KEYS: Array<keyof typeof SENDER> =
-  ["name","city","postcode","country","street","email","phone"];
-
-function checkSenderEnv() {
-  const miss = REQUIRED_SENDER_KEYS.filter(k => !String(SENDER[k]).trim());
-  return miss;
-}
-
-// === Utils ===
-const pick = (o:any,p:(string|number)[])=>p.reduce((a,k)=>a&&typeof a==="object"?a[k]:undefined,o);
-const hasTag = (t:any,tag:string)=> Array.isArray(t)?t.includes(tag): typeof t==="string"? t.split(",").map(s=>s.trim()).includes(tag): false;
-
-// Province: preferisci codice ISO2 (es. TX) rispetto al nome (Texas)
-function normalizeAddress(a:any){
-  if (!a) return null;
-  const country =
-    a.countryCodeV2 || a.country_code || (typeof a.country==="string" && a.country.length===2 ? a.country : null);
-  const province =
-    a.province_code || a.provinceCode || a.province || "";
-  const out = {
-    name: a.name || [a.first_name,a.last_name].filter(Boolean).join(" ") || "Customer",
-    street: a.address1,
-    address2: a.address2 || "",
-    city: a.city,
-    province,
-    postcode: a.zip || a.postal_code || a.postcode || "",
-    country,
-    phone: a.phone || "",
-    email: a.email || "",
+function sproAuthHeaders(){
+  const hasBearer = /^bearer\s+/i.test(SPRO_TOKEN_RAW);
+  const value = hasBearer ? SPRO_TOKEN_RAW : `Bearer ${SPRO_TOKEN_RAW}`;
+  return {
+    "X-Api-Key": value,
+    "Authorization": value,
+    "Content-Type": "application/json",
+    "Accept": "application/json",
   };
-  if (!out.street || !out.city || !out.postcode || !out.country) return null;
-  return out;
 }
 
-async function readJson(req: NextRequest){
-  try { return await req.json(); } catch { return null; }
+async function readJson(req: NextRequest){ try { return await req.json(); } catch { return null; } }
+function ok(data:any){ return new Response(JSON.stringify({ ok:true, ...data }), { status:200 }); }
+function bad(code:number,msg:string,data?:any){ return new Response(JSON.stringify({ ok:false, error:msg, ...(data?{detail:data}:{}) }), { status:code }); }
+
+async function shopifyREST(path:string, init?:RequestInit){
+  const res = await fetch(`https://${SHOP}/admin/api/2025-10${path}`, {
+    ...init,
+    headers: {
+      "X-Shopify-Access-Token": TOKEN,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      ...(init?.headers||{})
+    }
+  });
+  const text = await res.text();
+  let json:any; try{ json=JSON.parse(text);}catch{}
+  return { ok: res.ok, status: res.status, json, text };
 }
 
 async function shopifyGQL(query:string, variables?:Record<string,any>){
@@ -74,110 +66,142 @@ async function shopifyGQL(query:string, variables?:Record<string,any>){
   return { ok:true, json };
 }
 
-// === SpedirePro ===
-async function sproCreateLabel(payload:any){
-  if (!SPRO_TOKEN) return { ok:false, status:0, reason:"missing-token", text:null };
-  const res = await fetch(`${SPRO_BASE}/create-label`, {
-    method: "POST",
-    redirect: "manual",
-    headers: {
-      "X-Api-Key": SPRO_TOKEN,
-      "Content-Type":"application/json",
-      "Accept":"application/json"
-    },
-    body: JSON.stringify(payload),
-  });
-  const ct = res.headers.get("content-type") || "";
-  const text = await res.text();
-  console.log("SpedirePro /create-label ->", res.status, ct.slice(0,60), text.slice(0,200));
-  if (!ct.includes("application/json")) return { ok:false, status:res.status, reason:"non-json-response", text };
-  let json:any; try{ json=JSON.parse(text);}catch{ return { ok:false, status:res.status, reason:"bad-json", text }; }
-  if (!res.ok) return { ok:false, status:res.status, reason:"api-error", text, json };
-  return { ok:true, status:res.status, reason:"ok", text, json };
+function toStateCode(countryCode?:string, provinceCode?:string, province?:string){
+  if (countryCode === "US"){
+    if (provinceCode && provinceCode.length === 2) return provinceCode;
+    const map:Record<string,string> = {
+      "Texas":"TX","California":"CA","New York":"NY","Florida":"FL","Illinois":"IL","Pennsylvania":"PA","Ohio":"OH","Georgia":"GA","North Carolina":"NC","Michigan":"MI","Washington":"WA","Arizona":"AZ","Massachusetts":"MA","Tennessee":"TN","Indiana":"IN","Missouri":"MO","Maryland":"MD","Wisconsin":"WI","Colorado":"CO","Minnesota":"MN","South Carolina":"SC","Alabama":"AL","Louisiana":"LA","Kentucky":"KY","Oregon":"OR","Oklahoma":"OK","Connecticut":"CT","Utah":"UT","Iowa":"IA","Nevada":"NV","Arkansas":"AR","Mississippi":"MS","Kansas":"KS","New Mexico":"NM","Nebraska":"NE","Idaho":"ID","West Virginia":"WV","Hawaii":"HI","New Jersey":"NJ","Virginia":"VA","District of Columbia":"DC","Washington DC":"DC","Montana":"MT","Maine":"ME","New Hampshire":"NH","Vermont":"VT","Rhode Island":"RI","Delaware":"DE","Alaska":"AK","North Dakota":"ND","South Dakota":"SD","Wyoming":"WY"
+    };
+    if (province && map[province]) return map[province];
+  }
+  return provinceCode || province || "";
 }
 
-// === Handler ===
+function parseDims(dm:[number,number,number]){
+  const [l,w,h] = dm;
+  return { length_cm: Math.max(1, Math.round(l)), width_cm: Math.max(1, Math.round(w)), height_cm: Math.max(1, Math.round(h)) };
+}
+
+function extractLabelUrlFromText(text:string){
+  const m1 = text.match(/https?:\/\/(?:www\.)?spedirepro\.com\/bridge\/label\/[A-Za-z0-9_-]+(?:\?[^"'\s<>\)]*)?/i);
+  if (m1) return m1[0];
+  const m2 = text.match(/https?:\/\/files\.spedirepro\.com\/labels\/[A-Za-z0-9/_-]+\.pdf/i);
+  if (m2) return m2[0];
+  return null;
+}
+async function sproGetLabel(reference: string){
+  const tries = [{ order: reference }, { reference }, { shipment: reference }, { shipment_number: reference }];
+  for (const body of tries){
+    const res = await fetch(`${SPRO_BASE}/get-label`, { method:"POST", headers: sproAuthHeaders(), body: JSON.stringify(body) });
+    const ct = (res.headers.get("content-type")||"").toLowerCase();
+    const text = await res.text();
+    if (ct.includes("application/json")){
+      let js:any; try{ js=JSON.parse(text);}catch{ js=null; }
+      const link = js?.label?.link || js?.link || js?.url || js?.data?.label || js?.data?.link || js?.data?.url;
+      if (res.ok && link) return String(link);
+    }
+    const fromText = extractLabelUrlFromText(text);
+    if (fromText) return fromText;
+  }
+  return null;
+}
+
+async function setOrderMetafields(
+  orderGid:string,
+  fields: { reference?: string; ldv_url?: string }
+){
+  const items:any[] = [];
+  if (fields.reference) {
+    items.push({ ownerId: orderGid, namespace: "spro", key: "reference", type: "single_line_text_field", value: String(fields.reference) });
+  }
+  if (fields.ldv_url) {
+    items.push({ ownerId: orderGid, namespace: LABEL_NS, key: LABEL_KEY, type: "url", value: String(fields.ldv_url) });
+  }
+  if (!items.length) return { ok:true };
+  const m = `mutation($metafields:[MetafieldsSetInput!]!){ metafieldsSet(metafields:$metafields){ userErrors{ message } } }`;
+  return await shopifyGQL(m, { metafields: items });
+}
+
+async function replaceTag(orderId:number, removeTag:string, addTag:string){
+  const gres = await shopifyREST(`/orders/${orderId}.json`, { method:"GET" });
+  if (!gres.ok) return gres;
+  const tagsStr:string = gres.json?.order?.tags || "";
+  const tags = tagsStr.split(",").map((t:string)=>t.trim()).filter(Boolean);
+  const filtered = tags.filter((t:string)=> t.toLowerCase() !== removeTag.toLowerCase());
+  if (!filtered.includes(addTag)) filtered.push(addTag);
+  return await shopifyREST(`/orders/${orderId}.json`, { method:"PUT", body: JSON.stringify({ order: { id: orderId, tags: filtered.join(", ") } }) });
+}
+
 export default async function handler(req: NextRequest){
-  if (req.method!=="POST") return new Response(JSON.stringify({ ok:false, error:"method-not-allowed"}), { status:405 });
+  if (req.method !== "POST") return bad(405,"method-not-allowed");
+  const body = await readJson(req);
+  if (!body) return bad(400,"invalid-json");
 
-  const senderMissing = checkSenderEnv();
-  if (senderMissing.length){
-    console.error("SENDER_* mancanti:", senderMissing.join(", "));
-    return new Response(JSON.stringify({ ok:false, error:"sender-env-missing", missing: senderMissing }), { status:500 });
-  }
+  const order = body?.order || body;
+  const orderId: number = order?.id;
+  const orderGid: string = order?.admin_graphql_api_id;
+  const name: string = order?.name;
+  const tagsStr: string = order?.tags || "";
+  const hasTrigger = tagsStr.split(",").map((t:string)=>t.trim()).includes("SPRO-CREATE");
+  if (!orderId || !orderGid || !name) return bad(400,"missing-order-fields");
+  if (!hasTrigger) return ok({ skipped:true, reason:"missing-SPRO-CREATE" });
 
-  const raw:any = await readJson(req);
-  if (!raw) return new Response(JSON.stringify({ ok:true, skipped:"invalid-json"}), { status:200 });
+  const r = await shopifyREST(`/orders/${orderId}.json`, { method:"GET" });
+  if (!r.ok) return bad(502, "shopify-order-fetch-failed", r);
 
-  const orderName = raw?.name || (raw?.order_number?`#${raw.order_number}`:null);
-  const orderGid  = raw?.admin_graphql_api_id || null;
-  const tags      = raw?.tags ?? raw?.tag_string;
+  const full = r.json?.order;
+  const ship = full?.shipping_address || {};
+  const bill = full?.billing_address || {};
+  const email = full?.email || full?.contact_email || "";
+  const phone = ship?.phone || bill?.phone || "";
 
-  if (!hasTag(tags,"SPRO-CREATE")) return new Response(JSON.stringify({ ok:true, skipped:"no-SPRO-CREATE"}), { status:200 });
+  if (!email)  return bad(400, "missing-receiver-email");
+  if (!ship?.address1 || !ship?.city || !ship?.zip || !ship?.country_code) return bad(400, "missing-shipping-address");
 
-  const orderLevelEmail = (raw?.contact_email || raw?.email || "").trim();
+  const stateCode = toStateCode(ship?.country_code, ship?.province_code, ship?.province);
+  const { length_cm, width_cm, height_cm } = parseDims(DEFAULT_PARCEL);
 
-  // Destinatario: shipping → billing
-  let ship = normalizeAddress(raw?.shipping_address);
-  if (!ship) {
-    const bill = raw?.billing_address ? { ...raw.billing_address, email: orderLevelEmail } : null;
-    ship = normalizeAddress(bill);
-  }
-  if (!ship) return new Response(JSON.stringify({ ok:true, skipped:"no-address", order:orderName }), { status:200 });
-
-  // Fallback obbligatori per SpedirePro
-  const receiverEmail = (ship.email || orderLevelEmail || process.env.RECEIVER_FALLBACK_EMAIL || SENDER.email).trim();
-  const receiverPhone = (ship.phone || SENDER.phone).toString().trim();
-
-  console.log("orders-updated: receiver.email =", receiverEmail, "receiver.phone =", receiverPhone);
-
-  // Payload conforme a "Crea spedizione"
   const payload:any = {
-    merchant_reference: orderName || "UNKNOWN",
-    include_return_label: false,
-    courier_fallback: true,
-    book_pickup: false,
-    sender: SENDER,
+    merchant_reference: name,
     receiver: {
-      name: ship.name,
-      attention_name: "",
-      city: ship.city,
-      postcode: ship.postcode,
-      province: ship.province,     // ora usa ISO2 se disponibile
-      country: ship.country,
-      street: ship.address2 ? `${ship.street}, ${ship.address2}` : ship.street,
-      email: receiverEmail,
-      phone: receiverPhone,
+      first_name: ship?.first_name || bill?.first_name || "",
+      last_name:  ship?.last_name  || bill?.last_name  || "",
+      email,
+      phone: phone || "",
+      address: {
+        country: ship?.country_code,
+        state: stateCode,
+        city: ship?.city,
+        postcode: ship?.zip,
+        address: ship?.address1 + (ship?.address2 ? ` ${ship.address2}` : "")
+      }
     },
-    packages: [
-      { width: DEF_W, height: DEF_D, depth: DEF_L, weight: DEF_WEIGHT }
-    ]
+    parcel: { weight_kg: DEFAULT_WEIGHT, length_cm, width_cm, height_cm },
+    ...(SPRO_SERVICE ? { service: SPRO_SERVICE } : {})
   };
 
-  const sp = await sproCreateLabel(payload);
+  const createRes = await fetch(`${SPRO_BASE}/create-label`, {
+    method: "POST",
+    headers: sproAuthHeaders(),
+    body: JSON.stringify(payload)
+  });
 
-  // Salva reference e swap tag
-  if (orderGid){
-    const ref = pick(sp as any, ["json","reference"]) || pick(sp as any, ["json","data","reference"]) || pick(sp as any, ["json","order"]) || null;
-    if (ref){
-      const m = `mutation($metafields:[MetafieldsSetInput!]!){
-        metafieldsSet(metafields:$metafields){ userErrors{ message } }
-      }`;
-      await shopifyGQL(m, { metafields:[{ ownerId: orderGid, namespace:"spro", key:"reference", type:"single_line_text_field", value:String(ref)}] });
-    }
-    const m2 = `mutation($id:ID!){
-      add: tagsAdd(id:$id, tags:["SPRO-SENT"]){ userErrors{ message } }
-      rem: tagsRemove(id:$id, tags:["SPRO-CREATE"]){ userErrors{ message } }
-    }`;
-    await shopifyGQL(m2, { id: orderGid });
+  const ct = (createRes.headers.get("content-type")||"").toLowerCase();
+  const raw = await createRes.text();
+  if (!ct.includes("application/json")) return bad(502, "spro-create-non-json", { status: createRes.status, snippet: raw.slice(0,400) });
+
+  let js:any; try{ js=JSON.parse(raw);}catch{ js=null; }
+  if (!createRes.ok || !js) return bad(502, "spro-create-failed", { status: createRes.status, body: js || raw.slice(0,400) });
+
+  const reference = js?.order || js?.reference || js?.shipment || js?.shipment_number || "";
+
+  let labelUrl:string|null = null;
+  if (reference){
+    try{ labelUrl = await sproGetLabel(reference); }catch{}
   }
 
-  return new Response(JSON.stringify({
-    ok: sp.ok,
-    note: sp.ok ? "label-requested" : "label-request-failed",
-    reason: (sp as any).reason || null,
-    spro_status: sp.status || 0,
-    spro_body_snippet: (sp as any).text ? (sp as any).text.slice(0,200) : null,
-    order: orderName
-  }), { status:200 });
+  await setOrderMetafields(orderGid, { reference: reference || undefined, ldv_url: labelUrl || undefined });
+  await replaceTag(orderId, "SPRO-CREATE", "SPRO-SENT");
+
+  return ok({ status: "spro-label-created", order: name, reference: reference || null, label: labelUrl || null });
 }
