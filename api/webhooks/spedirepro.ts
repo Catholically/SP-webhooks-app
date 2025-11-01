@@ -107,7 +107,9 @@ export default async function handler(req: NextRequest) {
   if (req.method !== "POST") return bad(405, "method-not-allowed");
 
   // auth semplice su query ?token=
-  const token = req.nextUrl.searchParams.get("token") || "";
+const url = new URL(req.url);
+const token = url.searchParams.get("token") || "";
+  
   if (!WEBHOOK_TOKEN || token !== WEBHOOK_TOKEN) return bad(401, "unauthorized");
 
   const body = await readJson(req);
