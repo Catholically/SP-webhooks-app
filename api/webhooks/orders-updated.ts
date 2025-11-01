@@ -2,29 +2,37 @@
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
-// === ENV ===
+// === ENV base ===
 const SHOP  = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const SPRO_BASE  = process.env.SPRO_API_BASE || "https://spedirepro.com/public-api/v1"; // no www
+const SPRO_BASE  = process.env.SPRO_API_BASE || "https://spedirepro.com/public-api/v1";
 const SPRO_TOKEN = process.env.SPRO_API_TOKEN || ""; // solo token
+
+// === Pacco default ===
 const [DEF_L, DEF_W, DEF_D] = (process.env.DEFAULT_DIM_CM || "20x12x5").split("x").map(Number);
 const DEF_WEIGHT = Number(process.env.DEFAULT_WEIGHT_KG || "0.5");
 
-// Mittente fisso (personalizza o sposta in ENV)
+// === Mittente da ENV ===
 const SENDER = {
-  name: "Catholically",
-  attention_name: "",
-  city: "Roma",
-  postcode: "00100",
-  province: "RM",
-  country: "IT",
-  street: "Via Roma 1",
-  email: "support@catholically.com",
-  phone: "+39000000000",
-};
+  name: process.env.SENDER_NAME || "",
+  attention_name: process.env.SENDER_ATTENTION || "",
+  city: process.env.SENDER_CITY || "",
+  postcode: process.env.SENDER_ZIP || "",
+  province: process.env.SENDER_PROV || "",               // opzionale
+  country: process.env.SENDER_COUNTRY || "",            // ISO2 (es. IT)
+  street: [process.env.SENDER_ADDR1, process.env.SENDER_ADDR2].filter(Boolean).join(", "),
+  email: process.env.SENDER_EMAIL || "",
+  phone: process.env.SENDER_PHONE || "",
+} as const;
 
-// Fallback email se il cliente non ha email nello shipping
-const RECEIVER_FALLBACK_EMAIL = process.env.RECEIVER_FALLBACK_EMAIL || SENDER.email;
+// Verifica ENV obbligatorie per sender
+const REQUIRED_SENDER_KEYS: Array<keyof typeof SENDER> =
+  ["name","city","postcode","country","street","email","phone"];
+
+function checkSenderEnv() {
+  const missing = REQUIRED_SENDER_KEYS.filter(k => !String(SENDER[k]).trim());
+  return missing;
+}
 
 // === Utils ===
 const pick = (o:any,p:(string|number)[])=>p.reduce((a,k)=>a&&typeof a==="object"?a[k]:undefined,o);
@@ -42,7 +50,7 @@ function normalizeAddress(a:any){
     postcode: a.zip || a.postal_code || a.postcode || "",
     country,
     phone: a.phone || "",
-    email: a.email || "", // può essere vuoto: forziamo dopo
+    email: a.email || "",
   };
   if (!out.street || !out.city || !out.postcode || !out.country) return null;
   return out;
@@ -81,8 +89,16 @@ async function sproCreateLabel(payload:any){
   return { ok:true, status:res.status, reason:"ok", text, json };
 }
 
+// === Handler ===
 export default async function handler(req: NextRequest){
   if (req.method!=="POST") return new Response(JSON.stringify({ ok:false, error:"method-not-allowed"}), { status:405 });
+
+  // Controllo ENV sender
+  const missing = checkSenderEnv();
+  if (missing.length){
+    console.error("SENDER_* mancanti:", missing.join(", "));
+    return new Response(JSON.stringify({ ok:false, error:"sender-env-missing", missing }), { status:500 });
+  }
 
   const raw:any = await readJson(req);
   if (!raw) return new Response(JSON.stringify({ ok:true, skipped:"invalid-json"}), { status:200 });
@@ -93,10 +109,9 @@ export default async function handler(req: NextRequest){
 
   if (!hasTag(tags,"SPRO-CREATE")) return new Response(JSON.stringify({ ok:true, skipped:"no-SPRO-CREATE"}), { status:200 });
 
-  // Email di ordine
   const orderLevelEmail = (raw?.contact_email || raw?.email || "").trim();
 
-  // Address: shipping → billing
+  // Destinatario: shipping → billing
   let ship = normalizeAddress(raw?.shipping_address);
   if (!ship) {
     const bill = raw?.billing_address ? { ...raw.billing_address, email: orderLevelEmail } : null;
@@ -104,12 +119,11 @@ export default async function handler(req: NextRequest){
   }
   if (!ship) return new Response(JSON.stringify({ ok:true, skipped:"no-address", order:orderName }), { status:200 });
 
-  // Forza email e telefono del receiver con fallback forti
-  const receiverEmail = (ship.email || orderLevelEmail || RECEIVER_FALLBACK_EMAIL).trim();
+  // Fallback obbligatori per SpedirePro
+  const receiverEmail = (ship.email || orderLevelEmail || process.env.RECEIVER_FALLBACK_EMAIL || SENDER.email).trim();
   const receiverPhone = (ship.phone || SENDER.phone).toString().trim();
 
-  // Log di controllo per evitare altri 422
-  console.log("orders-updated: receiver.email =", receiverEmail || "<EMPTY>", "receiver.phone =", receiverPhone || "<EMPTY>");
+  console.log("orders-updated: receiver.email =", receiverEmail, "receiver.phone =", receiverPhone);
 
   // Payload conforme a "Crea spedizione"
   const payload:any = {
@@ -136,7 +150,7 @@ export default async function handler(req: NextRequest){
 
   const sp = await sproCreateLabel(payload);
 
-  // salva reference e swap tag
+  // Salva reference e swap tag
   if (orderGid){
     const ref = pick(sp as any, ["json","reference"]) || pick(sp as any, ["json","data","reference"]) || null;
     if (ref){
