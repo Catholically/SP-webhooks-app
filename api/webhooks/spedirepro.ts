@@ -1,28 +1,54 @@
-// api/webhooks/spedirepro.ts
+// api/webhooks/orders-updated.ts
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
 /*
-  ENV richiesti:
-  - SHOPIFY_SHOP                es. holy-trove.myshopify.com
-  - SHOPIFY_ADMIN_TOKEN         Admin API token
-  - SPRO_WEBHOOK_TOKEN          deve combaciare con ?token=...
-  - SPRO_API_BASE               es. https://www.spedirepro.com/public-api/v1
-  - SPRO_API_TOKEN              API key SpedirePro (SOLO token, senza "Bearer")
+ ENV richieste (Vercel):
+ - SHOPIFY_SHOP                es. holy-trove.myshopify.com
+ - SHOPIFY_ADMIN_TOKEN         Admin API token
+ - SPRO_API_BASE               es. https://www.spedirepro.com/public-api/v1
+ - SPRO_API_TOKEN              API key SPRO (può essere SOLO token: il codice aggiunge "Bearer " se manca)
+ - DEFAULT_PARCEL_CM           es. "20x12x5"
+ - DEFAULT_WEIGHT_KG           es. "0.5"
+ - SPRO_SERVICE                opzionale, es. "UPS 5-day" o lasciare vuoto
 */
 
 const SHOP  = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const HOOK_TOKEN = process.env.SPRO_WEBHOOK_TOKEN!;
-const SPRO_BASE  = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
-const SPRO_TOKEN = process.env.SPRO_API_TOKEN || "";
+const SPRO_BASE = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
+const SPRO_TOKEN_RAW = process.env.SPRO_API_TOKEN || "";
+const DEFAULT_PARCEL = (process.env.DEFAULT_PARCEL_CM || "20x12x5").split("x").map(n=>Number(n.trim())) as [number,number,number];
+const DEFAULT_WEIGHT = Number(process.env.DEFAULT_WEIGHT_KG || "0.5");
+const SPRO_SERVICE   = process.env.SPRO_SERVICE || ""; // opzionale
 
-// ---------- Utils ----------
+function sproAuthHeaders(){
+  const hasBearer = /^bearer\s+/i.test(SPRO_TOKEN_RAW);
+  const value = hasBearer ? SPRO_TOKEN_RAW : `Bearer ${SPRO_TOKEN_RAW}`;
+  return {
+    "X-Api-Key": value,
+    "Authorization": value,
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+  };
+}
+
 async function readJson(req: NextRequest){ try { return await req.json(); } catch { return null; } }
-function bad(code:number,msg:string,data?:any){ return new Response(JSON.stringify({ ok:false, error:msg, data }), { status:code }); }
-function extractLabelUrlFromText(text:string){
-  const m = text.match(/https?:\/\/(?:www\.)?spedirepro\.com\/bridge\/label\/[A-Za-z0-9_-]+(?:\?[^"'\s<>\)]*)?/i);
-  return m ? m[0] : null;
+function ok(data:any){ return new Response(JSON.stringify({ ok:true, ...data }), { status:200 }); }
+function bad(code:number,msg:string,data?:any){ return new Response(JSON.stringify({ ok:false, error:msg, ...(data?{detail:data}:{}) }), { status:code }); }
+
+async function shopifyREST(path:string, init?:RequestInit){
+  const res = await fetch(`https://${SHOP}/admin/api/2025-10${path}`, {
+    ...init,
+    headers: {
+      "X-Shopify-Access-Token": TOKEN,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      ...(init?.headers||{})
+    }
+  });
+  const text = await res.text();
+  let json:any; try{ json=JSON.parse(text);}catch{}
+  return { ok: res.ok, status: res.status, json, text };
 }
 
 async function shopifyGQL(query:string, variables?:Record<string,any>){
@@ -35,154 +61,81 @@ async function shopifyGQL(query:string, variables?:Record<string,any>){
   if (!res.ok || json?.errors) return { ok:false, status:res.status, json, text };
   return { ok:true, json };
 }
-async function shopifyREST(path:string, init?:RequestInit){
-  const res = await fetch(`https://${SHOP}/admin/api/2025-10${path}`, {
-    ...init,
-    headers: {
-      "X-Shopify-Access-Token": TOKEN,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(init?.headers||{})
-    },
-  });
-  const text = await res.text();
-  let json:any; try{ json=JSON.parse(text);}catch{}
-  return { ok: res.ok, status: res.status, json, text };
+
+// -- Helpers indirizzo --
+function toStateCode(countryCode?:string, provinceCode?:string, province?:string){
+  if (countryCode === "US"){
+    if (provinceCode && provinceCode.length === 2) return provinceCode;
+    // fallback: mappa alcuni stati comuni
+    const map:Record<string,string> = {
+      "Texas":"TX","California":"CA","New York":"NY","Florida":"FL","Illinois":"IL","Pennsylvania":"PA",
+      "Ohio":"OH","Georgia":"GA","North Carolina":"NC","Michigan":"MI","Washington":"WA","Arizona":"AZ",
+      "Massachusetts":"MA","Tennessee":"TN","Indiana":"IN","Missouri":"MO","Maryland":"MD","Wisconsin":"WI",
+      "Colorado":"CO","Minnesota":"MN","South Carolina":"SC","Alabama":"AL","Louisiana":"LA","Kentucky":"KY",
+      "Oregon":"OR","Oklahoma":"OK","Connecticut":"CT","Utah":"UT","Iowa":"IA","Nevada":"NV","Arkansas":"AR",
+      "Mississippi":"MS","Kansas":"KS","New Mexico":"NM","Nebraska":"NE","Idaho":"ID","West Virginia":"WV",
+      "Hawaii":"HI","New Jersey":"NJ","Virginia":"VA","Washington DC":"DC","District of Columbia":"DC",
+      "Montana":"MT","Maine":"ME","New Hampshire":"NH","Vermont":"VT","Rhode Island":"RI","Delaware":"DE",
+      "Alaska":"AK","North Dakota":"ND","South Dakota":"SD","Wyoming":"WY"
+    };
+    if (province && map[province]) return map[province];
+  }
+  // altrimenti restituisci il provinceCode così com’è se disponibile
+  return provinceCode || province || "";
 }
 
-// ---------- SpedirePro: Ristampa LDV (get-label) ----------
-async function sproGetLabel(shipmentNumber: string){
-  if (!SPRO_TOKEN) return { ok:false, status:0, reason:"missing-token" };
+function parseDims(dm:[number,number,number]){
+  const [l,w,h] = dm;
+  return {
+    length_cm: Math.max(1, Math.round(l)),
+    width_cm:  Math.max(1, Math.round(w)),
+    height_cm: Math.max(1, Math.round(h)),
+  };
+}
 
-  const bodies = [
-    { order: shipmentNumber },
-    { reference: shipmentNumber },
-    { shipment: shipmentNumber },
-    { shipment_number: shipmentNumber },
+// -- SPRO get-label (subito dopo create), così popoliamo label_url anche se SPRO non ce la manda via webhook --
+function extractLabelUrlFromText(text:string){
+  const m1 = text.match(/https?:\/\/(?:www\.)?spedirepro\.com\/bridge\/label\/[A-Za-z0-9_-]+(?:\?[^"'\s<>\)]*)?/i);
+  if (m1) return m1[0];
+  const m2 = text.match(/https?:\/\/files\.spedirepro\.com\/labels\/[A-Za-z0-9/_-]+\.pdf/i);
+  if (m2) return m2[0];
+  return null;
+}
+async function sproGetLabel(reference: string){
+  const tries = [
+    { order: reference },
+    { reference },
+    { shipment: reference },
+    { shipment_number: reference }
   ];
-
-  for (const body of bodies){
-    try{
-      console.log("spro get-label: try body", body);
-      const res = await fetch(`${SPRO_BASE}/get-label`, {
-        method: "POST",
-        headers: {
-          "X-Api-Key": SPRO_TOKEN,
-          "Content-Type": "application/json",
-          "Accept": "*/*",
-        },
-        body: JSON.stringify(body),
-      });
-      const ct = (res.headers.get("content-type") || "").toLowerCase();
-      const text = await res.text();
-      console.log("SpedirePro /get-label ->", res.status, ct.slice(0,60), text.slice(0,160));
-
-      // 1) JSON standard
-      if (ct.includes("application/json")) {
-        let json:any; try{ json = JSON.parse(text);}catch{ json = null; }
-        if (res.ok && json){
-          const link =
-            json?.label?.link ||
-            json?.link || json?.url ||
-            json?.data?.label || json?.data?.link || json?.data?.url || null;
-          if (link) return { ok:true, link, json };
-        }
-      }
-
-      // 2) Risposta testo/HTML con link dentro
-      const fromText = extractLabelUrlFromText(text);
-      if (fromText) return { ok:true, link: fromText, json: { raw: "text", snippet: text.slice(0,200) } };
-
-      // 3) Altre risposte non utili → prova prossimo body
-    }catch(e:any){
-      console.warn("spro get-label error:", e?.message || String(e));
+  for (const body of tries){
+    const res = await fetch(`${SPRO_BASE}/get-label`, {
+      method: "POST",
+      headers: sproAuthHeaders(),
+      body: JSON.stringify(body)
+    });
+    const ct = (res.headers.get("content-type")||"").toLowerCase();
+    const text = await res.text();
+    if (ct.includes("application/json")){
+      let js:any; try{ js=JSON.parse(text);}catch{ js=null; }
+      const link = js?.label?.link || js?.link || js?.url || js?.data?.label || js?.data?.link || js?.data?.url;
+      if (res.ok && link) return String(link);
     }
-  }
-  return { ok:false, reason:"no-label-returned" };
-}
-
-// ---- find order by merchant_reference "#NNN" o numeric ID ----
-async function findOrderByRef(ref:string){
-  if (ref?.startsWith("#")){
-    const q = `
-      orders(first:1, query:$q) {
-        edges { node {
-          id name legacyResourceId displayFulfillmentStatus
-          fulfillments(first:10){ id status trackingInfo{ number url } }
-        } }
-      }`;
-    const r = await shopifyGQL(`query($q:String!){ ${q} }`, { q: `name:${ref} status:any` });
-    if (r.ok && r.json?.data?.orders?.edges?.length){
-      const node = r.json.data.orders.edges[0].node;
-      return { id: node.id, legacyId: node.legacyResourceId, name: node.name, fulfillments: node.fulfillments||[], dfs: node.displayFulfillmentStatus };
-    }
-  }
-  const num = ref?.replace(/[^0-9]/g,"");
-  if (num){
-    const r = await shopifyGQL(`query($id:ID!){
-      order(id:$id){
-        id name legacyResourceId displayFulfillmentStatus
-        fulfillments(first:10){ id status trackingInfo{ number url } }
-      }
-    }`, { id: `gid://shopify/Order/${num}` });
-    if (r.ok && r.json?.data?.order){
-      const n = r.json.data.order;
-      return { id: n.id, legacyId: n.legacyResourceId, name: n.name, fulfillments: n.fulfillments||[], dfs: n.displayFulfillmentStatus };
-    }
+    const fromText = extractLabelUrlFromText(text);
+    if (fromText) return fromText;
   }
   return null;
 }
 
-// ---- get open fulfillment_orders ----
-async function getOpenFOs(orderLegacyId: string | number){
-  const r = await shopifyREST(`/orders/${orderLegacyId}/fulfillment_orders.json`, { method:"GET" });
-  if (!r.ok) return { ok:false, ...r };
-  const all = (r.json?.fulfillment_orders||[]);
-  const list = all.filter((fo:any)=> fo.status !== "closed" && fo.status !== "cancelled");
-  console.log("FOs:", JSON.stringify(all.map((x:any)=>({id:x.id,status:x.status,assigned_location_id:x.assigned_location_id}))));
-  return { ok:true, list, all };
-}
-
-async function createFulfillment(orderLegacyId: string | number, foList:any[], tracking:{ number?:string, url?:string, company?:string }){
-  if (!foList?.length) return { ok:false, status:422, json:{ errors:["no-open-fulfillment-orders"] } };
-  const line_items_by_fulfillment_order = foList.map((fo:any)=>({
-    fulfillment_order_id: fo.id,
-    fulfillment_order_line_items: (fo.fulfillment_order_line_items||[]).map((li:any)=>({ id: li.id, quantity: li.quantity }))
-  }));
-  const body = {
-    fulfillment: {
-      notify_customer: false,
-      tracking_info: {
-        number: tracking.number || null,
-        url: tracking.url || null,
-        company: tracking.company || "UPS",
-      },
-      line_items_by_fulfillment_order
-    }
-  };
-  return await shopifyREST(`/fulfillments.json`, { method:"POST", body: JSON.stringify(body) });
-}
-
-async function updateTracking(orderLegacyId: string | number, fulfillmentId: string | number, tracking:{ number?:string, url?:string, company?:string }){
-  const body = {
-    fulfillment: {
-      notify_customer: false,
-      tracking_info: {
-        number: tracking.number || null,
-        url: tracking.url || null,
-        company: "UPS",
-      }
-    }
-  };
-  return await shopifyREST(`/orders/${orderLegacyId}/fulfillments/${fulfillmentId}/update_tracking.json`, {
-    method:"POST", body: JSON.stringify(body)
-  });
-}
-
-async function setLabelMetafield(orderGid: string, labelUrl?:string, reference?:string){
-  const metas:any[] = [];
-  if (labelUrl) metas.push({ ownerId: orderGid, namespace:"spro", key:"label_url", type:"url", value:String(labelUrl) });
-  if (reference) metas.push({ ownerId: orderGid, namespace:"spro", key:"reference", type:"single_line_text_field", value:String(reference) });
+// -- Metafields --
+async function setOrderMetafields(orderGid:string, fields: Record<string,string>){
+  const metas = Object.entries(fields)
+    .filter(([,v]) => !!v)
+    .map(([k,v]) => ({
+      ownerId: orderGid, namespace:"spro", key:k,
+      type: k==="label_url" ? "url" : "single_line_text_field",
+      value: String(v)
+    }));
   if (!metas.length) return { ok:true };
   const m = `mutation($metafields:[MetafieldsSetInput!]!){
     metafieldsSet(metafields:$metafields){ userErrors{ message } }
@@ -190,109 +143,145 @@ async function setLabelMetafield(orderGid: string, labelUrl?:string, reference?:
   return await shopifyGQL(m, { metafields: metas });
 }
 
-// Anche in note_attributes così lo vedi subito in Admin
-async function addNoteAttribute(orderLegacyId: string|number, key:string, value:string){
-  const r1 = await shopifyREST(`/orders/${orderLegacyId}.json`, { method:"GET" });
-  if (!r1.ok) return r1;
-  const prev = r1.json?.order?.note_attributes || [];
-  const filtered = prev.filter((p:any)=> p?.name !== key);
-  const note_attributes = [...filtered, { name:key, value }];
-  return await shopifyREST(`/orders/${orderLegacyId}.json`, {
-    method:"PUT", body: JSON.stringify({ order: { id: orderLegacyId, note_attributes } })
+// -- Tag helpers --
+async function replaceTag(orderId:number, removeTag:string, addTag:string){
+  const gres = await shopifyREST(`/orders/${orderId}.json`, { method:"GET" });
+  if (!gres.ok) return gres;
+  const tagsStr:string = gres.json?.order?.tags || "";
+  const tags = tagsStr.split(",").map((t:string)=>t.trim()).filter(Boolean);
+  const filtered = tags.filter((t:string)=> t.toLowerCase() !== removeTag.toLowerCase());
+  if (!filtered.includes(addTag)) filtered.push(addTag);
+  return await shopifyREST(`/orders/${orderId}.json`, {
+    method:"PUT",
+    body: JSON.stringify({ order: { id: orderId, tags: filtered.join(", ") } })
   });
 }
 
-// ---- add tracking + label to order, create fulfillment if needed ----
-async function applyTrackingAndLabel(
-  order:{ id:string, legacyId:string|number, fulfillments:any[] },
-  trackingNum?:string, trackingUrl?:string, labelUrl?:string, reference?:string
-){
-  // URL tracking UPS standard
-  const trackingLink = trackingNum
-    ? `https://www.ups.com/track?track=yes&trackNums=${trackingNum}`
-    : (trackingUrl || null);
-
-  // 1) se c'è già un fulfillment, aggiorna tracking
-  const existing = order.fulfillments?.[0];
-  if (existing){
-    const fid = String(existing.id).split("/").pop()!;
-    const r = await updateTracking(order.legacyId, fid, { number: trackingNum, url: trackingLink, company: "UPS" });
-    await setLabelMetafield(order.id, labelUrl, reference);
-    if (labelUrl) await addNoteAttribute(order.legacyId, "spro_label_url", labelUrl);
-    return { step:"update-tracking", rest:r };
-  }
-
-  // 2) crea fulfillment dai fulfillment_orders aperti
-  const fos = await getOpenFOs(order.legacyId);
-  if (!fos.ok) return { step:"fetch-fo-error", detail: fos };
-
-  if (!fos.list.length){
-    return { step:"no-open-fulfillment-orders", detail: { all: fos.all } };
-  }
-
-  const cr = await createFulfillment(order.legacyId, fos.list, { number: trackingNum, url: trackingLink, company:"UPS" });
-  await setLabelMetafield(order.id, labelUrl, reference);
-  if (labelUrl) await addNoteAttribute(order.legacyId, "spro_label_url", labelUrl);
-  return { step:"create-fulfillment", rest: cr };
-}
-
-// =========================================================
 export default async function handler(req: NextRequest){
   if (req.method !== "POST") return bad(405,"method-not-allowed");
 
-  const token = new URL(req.url).searchParams.get("token") || "";
-  if (!HOOK_TOKEN || token !== HOOK_TOKEN) return bad(401,"unauthorized");
-
+  // Shopify invia application/json con il body dell'evento
   const body = await readJson(req);
   if (!body) return bad(400,"invalid-json");
 
-  const merchantRef = body.merchant_reference || body.merchantRef;
-  const reference   = body.reference || body.order; // numero spedizione SPRO
-  const trackingNum = body.tracking || body.tracking_number;
-  const incomingUrl = body.tracking_url || (body.tracking && typeof body.tracking === "object" ? body.tracking.url : undefined);
+  // Shopify Orders updated payload (REST-like)
+  const order = body?.order || body;
+  const orderId: number = order?.id;
+  const orderGid: string = order?.admin_graphql_api_id;
+  const name: string = order?.name; // es. "#3557xxxxxxx"
+  const tagsStr: string = order?.tags || "";
+  const hasTrigger = tagsStr.split(",").map((t:string)=>t.trim()).includes("SPRO-CREATE");
 
-  // Costruiamo sempre il tracking UPS standard
-  const trackingUrl = trackingNum
-    ? `https://www.ups.com/track?track=yes&trackNums=${trackingNum}`
-    : incomingUrl || undefined;
+  if (!orderId || !orderGid || !name) return bad(400,"missing-order-fields");
 
-  // Supporto ai vari formati di link etichetta (dal webhook)
-  let labelUrl =
-    body.label?.link ||
-    body.label_url ||
-    body.labelUrl ||
-    (typeof body.label === "string" && body.label.startsWith("http") ? body.label : undefined) ||
-    (body.link && String(body.link).includes("spedirepro.com/bridge/label") ? body.link : undefined);
-
-  console.log("spedirepro: incoming", {
-    merchantRef, reference, trackingNum, trackingUrl, labelUrl_present: !!labelUrl
-  });
-
-  if (!merchantRef) return bad(400,"missing-merchant_reference");
-
-  // Se label mancante ma abbiamo la reference, chiama /get-label (con parsing robusto)
-  let getLabelDebug:any = null;
-  if (!labelUrl && reference){
-    const gl = await sproGetLabel(reference);
-    getLabelDebug = gl.ok ? { ok:true } : { ok:false, reason: gl.reason };
-    if (gl.ok) {
-      labelUrl = gl.link;
-      console.log("spro get-label: resolved labelUrl", labelUrl);
-    } else {
-      console.warn("spro get-label: no label for", reference, gl);
-    }
+  if (!hasTrigger){
+    // Non fare nulla se non c'è il tag SPRO-CREATE
+    return ok({ skipped:true, reason:"missing-SPRO-CREATE" });
   }
 
-  const order = await findOrderByRef(merchantRef);
-  if (!order) return new Response(JSON.stringify({ ok:false, error:"order-not-found", ref: merchantRef }), { status:200 });
+  // Ricarica l'ordine completo via REST per avere indirizzi/contatti aggiornati
+  const r = await shopifyREST(`/orders/${orderId}.json`, { method:"GET" });
+  if (!r.ok) return bad(502, "shopify-order-fetch-failed", r);
 
-  const result = await applyTrackingAndLabel(order, trackingNum, trackingUrl, labelUrl, reference);
+  const full = r.json?.order;
+  const ship = full?.shipping_address || {};
+  const bill = full?.billing_address || {};
+  const email = full?.email || full?.contact_email || "";
+  const phone = ship?.phone || bill?.phone || "";
 
-  return new Response(JSON.stringify({
-    ok: true,
-    order: order.name,
-    label: labelUrl || null,
-    step: result.step,
-    detail: result.rest?.json || result.detail || getLabelDebug || null
-  }), { status:200 });
+  // Validazioni minime richieste da SPRO
+  if (!email)  return bad(400, "missing-receiver-email");
+  if (!ship?.address1 || !ship?.city || !ship?.zip || !ship?.country_code) return bad(400, "missing-shipping-address");
+
+  const stateCode = toStateCode(ship?.country_code, ship?.province_code, ship?.province);
+  const { length_cm, width_cm, height_cm } = parseDims(DEFAULT_PARCEL);
+
+  // Costruzione payload SPRO
+  const payload:any = {
+    // Identificativo nostro per ritrovarlo dopo nel webhook: sempre il name "#NNN"
+    merchant_reference: name,
+
+    // Dati destinatario
+    receiver: {
+      first_name: ship?.first_name || bill?.first_name || "",
+      last_name:  ship?.last_name  || bill?.last_name  || "",
+      email,
+      phone: phone || "",
+      address: {
+        country: ship?.country_code,
+        state: stateCode, // forziamo "TX" ecc.
+        city: ship?.city,
+        postcode: ship?.zip,
+        address: ship?.address1 + (ship?.address2 ? ` ${ship.address2}` : "")
+      }
+    },
+
+    // Pacco (default)
+    parcel: {
+      weight_kg: DEFAULT_WEIGHT,
+      length_cm, width_cm, height_cm,
+    },
+
+    // Opzionale: servizio scelto (se vuoi valorizzare)
+    ...(SPRO_SERVICE ? { service: SPRO_SERVICE } : {}),
+
+    // mittente opzionale: se vuoi fissare Roma/Milano, aggiungi qui i tuoi dati
+    // sender: { ... }
+  };
+
+  // Chiama SPRO /create-label
+  const createRes = await fetch(`${SPRO_BASE}/create-label`, {
+    method: "POST",
+    headers: sproAuthHeaders(),
+    body: JSON.stringify(payload)
+  });
+
+  const ct = (createRes.headers.get("content-type")||"").toLowerCase();
+  const raw = await createRes.text();
+  console.log("orders-updated: SpedirePro /create-label ->", createRes.status, ct, raw.slice(0,200));
+
+  // /create-label a volte può rispondere HTML (login page) se token errato → controlliamo
+  if (!ct.includes("application/json")){
+    return bad(502, "spro-create-non-json", { status: createRes.status, snippet: raw.slice(0,400) });
+  }
+
+  let js:any; try{ js=JSON.parse(raw);}catch{ js=null; }
+  if (!createRes.ok || !js){
+    return bad(502, "spro-create-failed", { status: createRes.status, body: js || raw.slice(0,400) });
+  }
+
+  // La risposta spesso contiene "order" o "reference" (numero spedizione SPRO)
+  const reference = js?.order || js?.reference || js?.shipment || js?.shipment_number || "";
+  console.log("orders-updated: created shipment reference =", reference);
+
+  // Subito dopo proviamo /get-label per riempire metafield label_url
+  let labelUrl:string|null = null;
+  if (reference){
+    try{
+      labelUrl = await sproGetLabel(reference);
+      if (labelUrl) console.log("orders-updated: resolved labelUrl", labelUrl);
+    }catch{}
+  }
+
+  // Salva subito i metafield su ordine: spro.reference (+ spro.label_url se trovata)
+  const saveMeta = await setOrderMetafields(orderGid, {
+    reference: reference || "",
+    ...(labelUrl ? { label_url: labelUrl } : {})
+  });
+  if (!saveMeta.ok) {
+    console.log("orders-updated: metafieldsSet errors", saveMeta);
+  }
+
+  // Rimpiazza il tag: SPRO-CREATE → SPRO-SENT
+  const retag = await replaceTag(orderId, "SPRO-CREATE", "SPRO-SENT");
+  if (!retag.ok) {
+    console.log("orders-updated: replaceTag failed", retag);
+  }
+
+  return ok({
+    status: "spro-label-created",
+    order: name,
+    reference: reference || null,
+    label: labelUrl || null
+  });
 }
