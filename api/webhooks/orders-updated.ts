@@ -6,7 +6,7 @@ export const config = { runtime: "edge" };
 const SHOP  = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
 const SPRO_BASE  = process.env.SPRO_API_BASE || "https://spedirepro.com/public-api/v1";
-const SPRO_TOKEN = process.env.SPRO_API_TOKEN || ""; // solo token
+const SPRO_TOKEN = process.env.SPRO_API_TOKEN || ""; // solo token, senza "Bearer"
 
 // === Pacco default ===
 const [DEF_L, DEF_W, DEF_D] = (process.env.DEFAULT_DIM_CM || "20x12x5").split("x").map(Number);
@@ -18,35 +18,38 @@ const SENDER = {
   attention_name: process.env.SENDER_ATTENTION || "",
   city: process.env.SENDER_CITY || "",
   postcode: process.env.SENDER_ZIP || "",
-  province: process.env.SENDER_PROV || "",               // opzionale
-  country: process.env.SENDER_COUNTRY || "",            // ISO2 (es. IT)
+  province: process.env.SENDER_PROV || "",
+  country: process.env.SENDER_COUNTRY || "",
   street: [process.env.SENDER_ADDR1, process.env.SENDER_ADDR2].filter(Boolean).join(", "),
   email: process.env.SENDER_EMAIL || "",
   phone: process.env.SENDER_PHONE || "",
 } as const;
 
-// Verifica ENV obbligatorie per sender
 const REQUIRED_SENDER_KEYS: Array<keyof typeof SENDER> =
   ["name","city","postcode","country","street","email","phone"];
 
 function checkSenderEnv() {
-  const missing = REQUIRED_SENDER_KEYS.filter(k => !String(SENDER[k]).trim());
-  return missing;
+  const miss = REQUIRED_SENDER_KEYS.filter(k => !String(SENDER[k]).trim());
+  return miss;
 }
 
 // === Utils ===
 const pick = (o:any,p:(string|number)[])=>p.reduce((a,k)=>a&&typeof a==="object"?a[k]:undefined,o);
 const hasTag = (t:any,tag:string)=> Array.isArray(t)?t.includes(tag): typeof t==="string"? t.split(",").map(s=>s.trim()).includes(tag): false;
 
+// Province: preferisci codice ISO2 (es. TX) rispetto al nome (Texas)
 function normalizeAddress(a:any){
   if (!a) return null;
-  const country = a.countryCodeV2 || a.country_code || (typeof a.country==="string"&&a.country.length===2?a.country:null);
+  const country =
+    a.countryCodeV2 || a.country_code || (typeof a.country==="string" && a.country.length===2 ? a.country : null);
+  const province =
+    a.province_code || a.provinceCode || a.province || "";
   const out = {
     name: a.name || [a.first_name,a.last_name].filter(Boolean).join(" ") || "Customer",
     street: a.address1,
     address2: a.address2 || "",
     city: a.city,
-    province: a.province || a.province_code || a.provinceCode || "",
+    province,
     postcode: a.zip || a.postal_code || a.postcode || "",
     country,
     phone: a.phone || "",
@@ -77,7 +80,11 @@ async function sproCreateLabel(payload:any){
   const res = await fetch(`${SPRO_BASE}/create-label`, {
     method: "POST",
     redirect: "manual",
-    headers: { "X-Api-Key": SPRO_TOKEN, "Content-Type":"application/json", "Accept":"application/json" },
+    headers: {
+      "X-Api-Key": SPRO_TOKEN,
+      "Content-Type":"application/json",
+      "Accept":"application/json"
+    },
     body: JSON.stringify(payload),
   });
   const ct = res.headers.get("content-type") || "";
@@ -93,11 +100,10 @@ async function sproCreateLabel(payload:any){
 export default async function handler(req: NextRequest){
   if (req.method!=="POST") return new Response(JSON.stringify({ ok:false, error:"method-not-allowed"}), { status:405 });
 
-  // Controllo ENV sender
-  const missing = checkSenderEnv();
-  if (missing.length){
-    console.error("SENDER_* mancanti:", missing.join(", "));
-    return new Response(JSON.stringify({ ok:false, error:"sender-env-missing", missing }), { status:500 });
+  const senderMissing = checkSenderEnv();
+  if (senderMissing.length){
+    console.error("SENDER_* mancanti:", senderMissing.join(", "));
+    return new Response(JSON.stringify({ ok:false, error:"sender-env-missing", missing: senderMissing }), { status:500 });
   }
 
   const raw:any = await readJson(req);
@@ -137,7 +143,7 @@ export default async function handler(req: NextRequest){
       attention_name: "",
       city: ship.city,
       postcode: ship.postcode,
-      province: ship.province || "",
+      province: ship.province,     // ora usa ISO2 se disponibile
       country: ship.country,
       street: ship.address2 ? `${ship.street}, ${ship.address2}` : ship.street,
       email: receiverEmail,
@@ -152,7 +158,7 @@ export default async function handler(req: NextRequest){
 
   // Salva reference e swap tag
   if (orderGid){
-    const ref = pick(sp as any, ["json","reference"]) || pick(sp as any, ["json","data","reference"]) || null;
+    const ref = pick(sp as any, ["json","reference"]) || pick(sp as any, ["json","data","reference"]) || pick(sp as any, ["json","order"]) || null;
     if (ref){
       const m = `mutation($metafields:[MetafieldsSetInput!]!){
         metafieldsSet(metafields:$metafields){ userErrors{ message } }
