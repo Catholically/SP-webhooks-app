@@ -2,9 +2,20 @@
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
+/*
+  ENV richiesti:
+  - SHOPIFY_SHOP
+  - SHOPIFY_ADMIN_TOKEN
+  - SPRO_WEBHOOK_TOKEN        // deve combaciare con ?token=...
+  - SPRO_API_BASE             // es. https://www.spedirepro.com/public-api/v1
+  - SPRO_API_TOKEN            // API key SpedirePro (SOLO token, senza "Bearer")
+*/
+
 const SHOP  = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
 const HOOK_TOKEN = process.env.SPRO_WEBHOOK_TOKEN!;
+const SPRO_BASE  = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
+const SPRO_TOKEN = process.env.SPRO_API_TOKEN || "";
 
 async function readJson(req: NextRequest){ try { return await req.json(); } catch { return null; } }
 function bad(code:number,msg:string,data?:any){ return new Response(JSON.stringify({ ok:false, error:msg, data }), { status:code }); }
@@ -34,21 +45,57 @@ async function shopifyREST(path:string, init?:RequestInit){
   return { ok: res.ok, status: res.status, json, text };
 }
 
+// ---------- SpedirePro: Ristampa LDV (get-label) ----------
+async function sproGetLabel(shipmentNumber: string){
+  if (!SPRO_TOKEN) return { ok:false, status:0, reason:"missing-token" };
+
+  const bodies = [
+    { order: shipmentNumber },
+    { reference: shipmentNumber }
+  ];
+
+  for (const body of bodies){
+    console.log("spro get-label: calling with body", body);
+    const res = await fetch(`${SPRO_BASE}/get-label`, {
+      method: "POST",
+      headers: {
+        "X-Api-Key": SPRO_TOKEN,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const ct = res.headers.get("content-type") || "";
+    const text = await res.text();
+    console.log("SpedirePro /get-label ->", res.status, ct.slice(0,60), text.slice(0,200));
+
+    if (!ct.includes("application/json")) continue;
+    let json:any; try{ json=JSON.parse(text);}catch{ continue; }
+    if (res.ok){
+      // accetta varie forme
+      const link =
+        json?.label?.link ||
+        json?.link ||
+        json?.url ||
+        json?.data?.label ||
+        json?.data?.link ||
+        json?.data?.url ||
+        null;
+      if (link) return { ok:true, link, json };
+    }
+  }
+  return { ok:false, reason:"no-label-returned" };
+}
+
 // ---- find order by merchant_reference "#NNN" o numeric ID ----
 async function findOrderByRef(ref:string){
-  // 1) name:#NNN via GraphQL con status:any
   if (ref?.startsWith("#")){
     const q = `
       orders(first:1, query:$q) {
-        edges {
-          node {
-            id
-            name
-            legacyResourceId
-            displayFulfillmentStatus
-            fulfillments(first:10){ id status trackingInfo{ number url } }
-          }
-        }
+        edges { node {
+          id name legacyResourceId displayFulfillmentStatus
+          fulfillments(first:10){ id status trackingInfo{ number url } }
+        } }
       }`;
     const r = await shopifyGQL(`query($q:String!){ ${q} }`, { q: `name:${ref} status:any` });
     if (r.ok && r.json?.data?.orders?.edges?.length){
@@ -56,7 +103,6 @@ async function findOrderByRef(ref:string){
       return { id: node.id, legacyId: node.legacyResourceId, name: node.name, fulfillments: node.fulfillments||[], dfs: node.displayFulfillmentStatus };
     }
   }
-  // 2) fallback: ID numerico
   const num = ref?.replace(/[^0-9]/g,"");
   if (num){
     const r = await shopifyGQL(`query($id:ID!){
@@ -83,17 +129,12 @@ async function getOpenFOs(orderLegacyId: string | number){
   return { ok:true, list, all };
 }
 
-// ---- create fulfillment from fulfillment_orders ----
 async function createFulfillment(orderLegacyId: string | number, foList:any[], tracking:{ number?:string, url?:string, company?:string }){
   if (!foList?.length) return { ok:false, status:422, json:{ errors:["no-open-fulfillment-orders"] } };
-
   const line_items_by_fulfillment_order = foList.map((fo:any)=>({
     fulfillment_order_id: fo.id,
-    fulfillment_order_line_items: (fo.fulfillment_order_line_items||[]).map((li:any)=>({
-      id: li.id, quantity: li.quantity
-    }))
+    fulfillment_order_line_items: (fo.fulfillment_order_line_items||[]).map((li:any)=>({ id: li.id, quantity: li.quantity }))
   }));
-
   const body = {
     fulfillment: {
       notify_customer: false,
@@ -105,11 +146,9 @@ async function createFulfillment(orderLegacyId: string | number, foList:any[], t
       line_items_by_fulfillment_order
     }
   };
-
   return await shopifyREST(`/fulfillments.json`, { method:"POST", body: JSON.stringify(body) });
 }
 
-// ---- update tracking on existing fulfillment (REST) ----
 async function updateTracking(orderLegacyId: string | number, fulfillmentId: string | number, tracking:{ number?:string, url?:string, company?:string }){
   const body = {
     fulfillment: {
@@ -126,7 +165,6 @@ async function updateTracking(orderLegacyId: string | number, fulfillmentId: str
   });
 }
 
-// ---- set metafield label URL ----
 async function setLabelMetafield(orderGid: string, labelUrl?:string, reference?:string){
   const metas:any[] = [];
   if (labelUrl) metas.push({ ownerId: orderGid, namespace:"spro", key:"label_url", type:"url", value:String(labelUrl) });
@@ -138,7 +176,18 @@ async function setLabelMetafield(orderGid: string, labelUrl?:string, reference?:
   return await shopifyGQL(m, { metafields: metas });
 }
 
-// ---- add tracking + label to order, create fulfillment if needed ----
+// Anche in note_attributes così lo vedi subito in Admin
+async function addNoteAttribute(orderLegacyId: string|number, key:string, value:string){
+  const r1 = await shopifyREST(`/orders/${orderLegacyId}.json`, { method:"GET" });
+  if (!r1.ok) return r1;
+  const prev = r1.json?.order?.note_attributes || [];
+  const filtered = prev.filter((p:any)=> p?.name !== key);
+  const note_attributes = [...filtered, { name:key, value }];
+  return await shopifyREST(`/orders/${orderLegacyId}.json`, {
+    method:"PUT", body: JSON.stringify({ order: { id: orderLegacyId, note_attributes } })
+  });
+}
+
 async function applyTrackingAndLabel(order:{ id:string, legacyId:string|number, fulfillments:any[] }, trackingNum?:string, trackingUrl?:string, labelUrl?:string, reference?:string){
   // 1) se c'è già un fulfillment, aggiorna tracking
   const existing = order.fulfillments?.[0];
@@ -146,20 +195,21 @@ async function applyTrackingAndLabel(order:{ id:string, legacyId:string|number, 
     const fid = String(existing.id).split("/").pop()!;
     const r = await updateTracking(order.legacyId, fid, { number: trackingNum, url: trackingUrl, company: "UPS" });
     await setLabelMetafield(order.id, labelUrl, reference);
+    if (labelUrl) await addNoteAttribute(order.legacyId, "spro_label_url", labelUrl);
     return { step:"update-tracking", rest:r };
   }
 
-  // 2) altrimenti crea fulfillment dai fulfillment_orders aperti
+  // 2) crea fulfillment dai fulfillment_orders aperti
   const fos = await getOpenFOs(order.legacyId);
   if (!fos.ok) return { step:"fetch-fo-error", detail: fos };
 
   if (!fos.list.length){
-    // NIENTE FO aperti: spieghiamo bene il perché (draft order, manual, già chiusi, location sbagliata, etc.)
     return { step:"no-open-fulfillment-orders", detail: { all: fos.all } };
   }
 
   const cr = await createFulfillment(order.legacyId, fos.list, { number: trackingNum, url: trackingUrl, company:"UPS" });
   await setLabelMetafield(order.id, labelUrl, reference);
+  if (labelUrl) await addNoteAttribute(order.legacyId, "spro_label_url", labelUrl);
   return { step:"create-fulfillment", rest: cr };
 }
 
@@ -174,12 +224,12 @@ export default async function handler(req: NextRequest){
   if (!body) return bad(400,"invalid-json");
 
   const merchantRef = body.merchant_reference || body.merchantRef;
-  const reference   = body.reference || body.order;
+  const reference   = body.reference || body.order; // numero spedizione SPRO
   const trackingNum = body.tracking || body.tracking_number;
   const trackingUrl = body.tracking_url || (body.tracking && typeof body.tracking === "object" ? body.tracking.url : undefined);
 
-  // supporto URL bridge/label o varianti
-  const labelUrl =
+  // Supporto ai vari formati di link etichetta
+  let labelUrl =
     body.label?.link ||
     body.label_url ||
     body.labelUrl ||
@@ -190,16 +240,26 @@ export default async function handler(req: NextRequest){
 
   if (!merchantRef) return bad(400,"missing-merchant_reference");
 
+  // Se label mancante ma abbiamo la reference, chiama /get-label
+  if (!labelUrl && reference){
+    const gl = await sproGetLabel(reference);
+    if (gl.ok) {
+      labelUrl = gl.link;
+      console.log("spro get-label: resolved labelUrl", labelUrl);
+    } else {
+      console.warn("spro get-label: no label for", reference, gl);
+    }
+  }
+
   const order = await findOrderByRef(merchantRef);
   if (!order) return new Response(JSON.stringify({ ok:false, error:"order-not-found", ref: merchantRef }), { status:200 });
 
   const result = await applyTrackingAndLabel(order, trackingNum, trackingUrl, labelUrl, reference);
 
-  // Risposta dettagliata per capire cosa succede
   return new Response(JSON.stringify({
     ok: true,
     order: order.name,
-    displayFulfillmentStatus: order.dfs,
+    label: labelUrl || null,
     step: result.step,
     detail: result.rest?.json || result.detail || null
   }), { status:200 });
