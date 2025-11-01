@@ -2,143 +2,168 @@
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
-const SHOP = process.env.SHOPIFY_SHOP!;
+const SHOP  = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
-const CARRIER = process.env.DEFAULT_CARRIER_NAME || "UPS";
-const WEBHOOK_TOKEN = process.env.SPRO_WEBHOOK_TOKEN;
-const SPRO_BASE = process.env.SPRO_API_BASE!;
-const SPRO_TOKEN = process.env.SPRO_API_TOKEN!;
+const HOOK_TOKEN = process.env.SPRO_WEBHOOK_TOKEN!;
 
-type SpPayload = {
-  merchant_reference?: string;  // es. "#35558182025"
-  reference?: string;           // riferimento SpedirePro
-  tracking?: string;
-  tracking_url?: string;
-  label?: { link?: string; url?: string };
-  label_url?: string;
-  labelPdf?: string;
-};
+async function readJson(req: NextRequest){ try { return await req.json(); } catch { return null; } }
+function bad(code:number,msg:string){ return new Response(JSON.stringify({ ok:false, error:msg }), { status:code }); }
 
-const jget = (o:any,p:(string|number)[])=>p.reduce((a,k)=>a&&typeof a==="object"?a[k]:undefined,o);
-
-async function gql(q:string,v?:Record<string,any>) {
-  const r = await fetch(`https://${SHOP}/admin/api/2025-10/graphql.json`, {
-    method:"POST", headers:{ "X-Shopify-Access-Token":TOKEN, "Content-Type":"application/json" },
-    body: JSON.stringify({ query:q, variables:v||{} })
+async function shopifyGQL(query:string, variables?:Record<string,any>){
+  const res = await fetch(`https://${SHOP}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: { "X-Shopify-Access-Token": TOKEN, "Content-Type":"application/json" },
+    body: JSON.stringify({ query, variables: variables||{} }),
   });
-  const t = await r.text(); let j:any; try{ j=JSON.parse(t);}catch{}
-  if (!r.ok || j?.errors) return { ok:false, status:r.status, t, j };
-  return { ok:true, j };
+  const text = await res.text(); let json:any; try{ json=JSON.parse(text);}catch{}
+  if (!res.ok || json?.errors) return { ok:false, status:res.status, json, text };
+  return { ok:true, json };
+}
+async function shopifyREST(path:string, init?:RequestInit){
+  const res = await fetch(`https://${SHOP}/admin/api/2025-10${path}`, {
+    ...init,
+    headers: {
+      "X-Shopify-Access-Token": TOKEN,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      ...(init?.headers||{})
+    },
+  });
+  const text = await res.text();
+  let json:any; try{ json=JSON.parse(text);}catch{}
+  return { ok: res.ok, status: res.status, json, text };
 }
 
-function gidToNum(gid?:string){ if(!gid) return null; const m=gid.match(/\/(\d+)$/); return m?m[1]:null; }
-
-async function findOrderByNameOrId(ref:string){
-  const name = ref.startsWith("#") ? ref : `#${ref}`;
-  const q = `query($q:String!){ orders(first:1, query:$q){ edges{ node{ id name } } } }`;
-  const r = await gql(q, { q:`status:any name:${JSON.stringify(name)}` });
-  if (!r.ok) return { ok:false, err:r.j||r.t };
-  const n = jget(r.j, ["data","orders","edges",0,"node"]);
-  if (!n?.id) return { ok:false, nf:true };
-  return { ok:true, order:n };
-}
-
-async function getOpenFOItems(orderId:string){
-  const q = `query($id:ID!){
-    order(id:$id){
-      id
-      fulfillmentOrders(first:20){
-        edges{ node{
-          id status
-          lineItems(first:100){ edges{ node{ id remainingQuantity } } }
-        } }
-      }
-    }
-  }`;
-  const r = await gql(q,{ id: orderId });
-  if (!r.ok) return { ok:false, err:r.j||r.t };
-  const edges = jget(r.j, ["data","order","fulfillmentOrders","edges"])||[];
-  const items: { fulfillment_order_id:string; line_item_id:string; qty:number }[] = [];
-  for (const e of edges){
-    const status = jget(e,["node","status"]);
-    if (status !== "OPEN" && status !== "IN_PROGRESS") continue;
-    const foId = jget(e,["node","id"]);
-    for (const le of jget(e,["node","lineItems","edges"])||[]){
-      const liId = jget(le,["node","id"]);
-      const rem = jget(le,["node","remainingQuantity"])||0;
-      if (foId && liId && rem>0) items.push({ fulfillment_order_id: foId, line_item_id: liId, qty: rem });
+// ---- find order by merchant_reference "#NNN" o numeric ID ----
+async function findOrderByRef(ref:string){
+  if (ref?.startsWith("#")){
+    const q = `orders(first:1, query:$q) { edges { node { id name legacyResourceId fulfillments(first:10){ id status trackingInfo{ number url } } } } }`;
+    const r = await shopifyGQL(`query($q:String!){ ${q} }`, { q: `name:${ref} status:any` });
+    if (r.ok && r.json?.data?.orders?.edges?.length){
+      const node = r.json.data.orders.edges[0].node;
+      return { id: node.id, legacyId: node.legacyResourceId, name: node.name, fulfillments: node.fulfillments||[] };
     }
   }
-  return { ok:true, items };
+  const num = ref?.replace(/[^0-9]/g,"");
+  if (num){
+    const r = await shopifyGQL(`query($id:ID!){ order(id:$id){ id name legacyResourceId fulfillments(first:10){ id status trackingInfo{ number url } } } }`,
+      { id: `gid://shopify/Order/${num}` });
+    if (r.ok && r.json?.data?.order){
+      const n = r.json.data.order;
+      return { id: n.id, legacyId: n.legacyResourceId, name: n.name, fulfillments: n.fulfillments||[] };
+    }
+  }
+  return null;
 }
 
-async function createFulfillmentREST(items:{fulfillment_order_id:string; line_item_id:string; qty:number}[], trackNo?:string, trackUrl?:string, company?:string){
-  const groups: Record<string,{ fulfillment_order_id:string; fulfillment_order_line_items:{ id:string; quantity:number }[] }> = {};
-  for (const it of items){
-    const fo = gidToNum(it.fulfillment_order_id); const li = gidToNum(it.line_item_id);
-    if (!fo || !li) continue;
-    if (!groups[fo]) groups[fo] = { fulfillment_order_id: fo, fulfillment_order_line_items: [] };
-    groups[fo].fulfillment_order_line_items.push({ id: li, quantity: it.qty });
-  }
-  const line_items_by_fulfillment_order = Object.values(groups);
-  if (!line_items_by_fulfillment_order.length) return { ok:false, status:422, body:"no-open-fo-items" };
+// ---- get open fulfillment_orders ----
+async function getOpenFOs(orderLegacyId: string | number){
+  const r = await shopifyREST(`/orders/${orderLegacyId}/fulfillment_orders.json`, { method:"GET" });
+  if (!r.ok) return { ok:false, ...r };
+  const list = (r.json?.fulfillment_orders||[]).filter((fo:any)=> fo.status !== "closed" && fo.status !== "cancelled");
+  return { ok:true, list };
+}
 
-  const url = `https://${SHOP}/admin/api/2025-10/fulfillments.json`;
+async function createFulfillment(orderLegacyId: string | number, foList:any[], tracking:{number?:string, url?:string, company?:string}){
+  if (!foList?.length) return { ok:false, status:422, text:"no-open-fulfillment-orders" };
+  const line_items_by_fulfillment_order = foList.map((fo:any)=>({
+    fulfillment_order_id: fo.id,
+    fulfillment_order_line_items: fo.fulfillment_order_line_items.map((li:any)=>({ id: li.id, quantity: li.quantity }))
+  }));
   const body = {
     fulfillment: {
-      line_items_by_fulfillment_order,
-      tracking_info: { number: trackNo||"", url: trackUrl||"", company: company||CARRIER },
       notify_customer: false,
+      tracking_info: {
+        number: tracking.number || null,
+        url: tracking.url || null,
+        company: tracking.company || "UPS",
+      },
+      line_items_by_fulfillment_order
     }
   };
-  const res = await fetch(url, { method:"POST", headers:{ "X-Shopify-Access-Token":TOKEN, "Content-Type":"application/json" }, body: JSON.stringify(body) });
-  const text = await res.text();
-  if (!res.ok) return { ok:false, status:res.status, body:text };
-  return { ok:true };
+  return await shopifyREST(`/fulfillments.json`, { method:"POST", body: JSON.stringify(body) });
 }
 
-async function latestFulfillment(orderId:string){
-  const q = `query($id:ID!){ order(id:$id){ fulfillments{ id createdAt } } }`;
-  const r = await gql(q,{ id: orderId });
-  if (!r.ok) return { ok:false, err:r.j||r.t };
-  const list = jget(r.j, ["data","order","fulfillments"])||[];
-  let latest:any=null; for (const f of list){ if (f?.id && f?.createdAt) if (!latest || new Date(f.createdAt)>new Date(latest.createdAt)) latest=f; }
-  return { ok:true, id: latest?.id||null };
+async function updateTracking(orderLegacyId: string | number, fulfillmentId: string | number, tracking:{number?:string, url?:string, company?:string}){
+  const body = {
+    fulfillment: {
+      notify_customer: false,
+      tracking_info: {
+        number: tracking.number || null,
+        url: tracking.url || null,
+        company: tracking.company || "UPS",
+      }
+    }
+  };
+  return await shopifyREST(`/orders/${orderLegacyId}/fulfillments/${fulfillmentId}/update_tracking.json`, {
+    method:"POST", body: JSON.stringify(body)
+  });
 }
 
-async function updateTrackingREST(fidGid:string, number?:string, url?:string, company?:string){
-  const fid = gidToNum(fidGid); if (!fid) return { ok:false, status:0, body:"bad-fulfillment-id" };
-  const endpoint = `https://${SHOP}/admin/api/2025-10/fulfillments/${fid}/update_tracking.json`;
-  const body = { fulfillment:{ tracking_info:{ number:number||"", url:url||"", company:company||CARRIER }, notify_customer:false } };
-  const res = await fetch(endpoint, { method:"POST", headers:{ "X-Shopify-Access-Token":TOKEN, "Content-Type":"application/json" }, body: JSON.stringify(body) });
-  const text = await res.text(); if (!res.ok) return { ok:false, status:res.status, body:text };
-  return { ok:true };
-}
-
-async function setLabelMetafields(orderGid:string, labelUrl?:string){
-  if (!labelUrl) return { ok:true };
+async function setLabelMetafield(orderGid: string, labelUrl?:string, reference?:string){
+  const metas:any[] = [];
+  if (labelUrl) metas.push({ ownerId: orderGid, namespace:"spro", key:"label_url", type:"url", value:String(labelUrl) });
+  if (reference) metas.push({ ownerId: orderGid, namespace:"spro", key:"reference", type:"single_line_text_field", value:String(reference) });
+  if (!metas.length) return { ok:true };
   const m = `mutation($metafields:[MetafieldsSetInput!]!){
     metafieldsSet(metafields:$metafields){ userErrors{ message } }
   }`;
-  const metafields = [
-    { ownerId: orderGid, namespace:"spro",   key:"label_url", type:"single_line_text_field", value: labelUrl },
-    { ownerId: orderGid, namespace:"custom", key:"ups_label", type:"single_line_text_field", value: labelUrl },
-  ];
-  const r = await gql(m, { metafields });
-  if (!r.ok) return { ok:false, err:r.j||r.t };
-  return { ok:true };
+  return await shopifyGQL(m, { metafields: metas });
 }
 
-async function swapTags(orderGid:string){
-  const m = `mutation($id:ID!){
-    add: tagsAdd(id:$id, tags:["SPRO-SENT"]){ userErrors{ message } }
-    rem: tagsRemove(id:$id, tags:["SPRO-CREATE"]){ userErrors{ message } }
-  }`;
-  await gql(m,{ id: orderGid });
+async function applyTrackingAndLabel(order:any, trackingNum?:string, trackingUrl?:string, labelUrl?:string, reference?:string){
+  const existing = order.fulfillments?.[0];
+  if (existing){
+    const r = await updateTracking(order.legacyId, String(existing.id).split("/").pop()!, {
+      number: trackingNum, url: trackingUrl, company: "UPS"
+    });
+    await setLabelMetafield(order.id, labelUrl, reference);
+    return { step:"update-tracking", rest:r };
+  }
+  const fos = await getOpenFOs(order.legacyId);
+  if (!fos.ok) return { step:"fetch-fo-error", detail: fos };
+  const cr = await createFulfillment(order.legacyId, fos.list, { number: trackingNum, url: trackingUrl, company:"UPS" });
+  await setLabelMetafield(order.id, labelUrl, reference);
+  return { step:"create-fulfillment", rest: cr };
 }
 
-async function sproFetchLabel(reference?:string){
-  if (!reference) return null;
-  const res = await fetch(`${SPRO_BASE}/labels/${encodeURIComponent(reference)}`, {
-    headers:{ Authorization: SPRO_TOKEN }
- 
+// =========================================================
+export default async function handler(req: NextRequest){
+  if (req.method !== "POST") return bad(405,"method-not-allowed");
+
+  const token = new URL(req.url).searchParams.get("token") || "";
+  if (!HOOK_TOKEN || token !== HOOK_TOKEN) return bad(401,"unauthorized");
+
+  const body = await readJson(req);
+  if (!body) return bad(400,"invalid-json");
+
+  const merchantRef = body.merchant_reference || body.merchantRef;
+  const reference   = body.reference || body.order;
+  const trackingNum = body.tracking || body.tracking_number;
+  const trackingUrl = body.tracking_url || (body.tracking && typeof body.tracking === "object" ? body.tracking.url : undefined);
+
+  // supporto URL bridge/label
+  const labelUrl =
+    body.label?.link ||
+    body.label_url ||
+    body.labelUrl ||
+    (typeof body.label === "string" && body.label.startsWith("http") ? body.label : undefined) ||
+    (body.link && String(body.link).includes("spedirepro.com/bridge/label") ? body.link : undefined);
+
+  console.log("spedirepro: incoming", { merchantRef, reference, trackingNum, labelUrl });
+
+  if (!merchantRef) return bad(400,"missing-merchant_reference");
+
+  const order = await findOrderByRef(merchantRef);
+  if (!order) return new Response(JSON.stringify({ ok:false, error:"order-not-found", ref: merchantRef }), { status:200 });
+
+  const result = await applyTrackingAndLabel(order, trackingNum, trackingUrl, labelUrl, reference);
+
+  return new Response(JSON.stringify({
+    ok: true,
+    order: order.name,
+    step: result.step,
+    label: labelUrl,
+    detail: result.rest?.json || result.detail || null
+  }), { status:200 });
+}
