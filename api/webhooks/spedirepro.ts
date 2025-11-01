@@ -4,11 +4,11 @@ export const config = { runtime: "edge" };
 
 /*
   ENV richiesti:
-  - SHOPIFY_SHOP
-  - SHOPIFY_ADMIN_TOKEN
-  - SPRO_WEBHOOK_TOKEN        // deve combaciare con ?token=...
-  - SPRO_API_BASE             // es. https://www.spedirepro.com/public-api/v1
-  - SPRO_API_TOKEN            // API key SpedirePro (SOLO token, senza "Bearer")
+  - SHOPIFY_SHOP                es. holy-trove.myshopify.com
+  - SHOPIFY_ADMIN_TOKEN         Admin API token
+  - SPRO_WEBHOOK_TOKEN          deve combaciare con ?token=...
+  - SPRO_API_BASE               es. https://www.spedirepro.com/public-api/v1
+  - SPRO_API_TOKEN              API key SpedirePro (SOLO token, senza "Bearer")
 */
 
 const SHOP  = process.env.SHOPIFY_SHOP!;
@@ -72,7 +72,6 @@ async function sproGetLabel(shipmentNumber: string){
     if (!ct.includes("application/json")) continue;
     let json:any; try{ json=JSON.parse(text);}catch{ continue; }
     if (res.ok){
-      // accetta varie forme
       const link =
         json?.label?.link ||
         json?.link ||
@@ -188,12 +187,21 @@ async function addNoteAttribute(orderLegacyId: string|number, key:string, value:
   });
 }
 
-async function applyTrackingAndLabel(order:{ id:string, legacyId:string|number, fulfillments:any[] }, trackingNum?:string, trackingUrl?:string, labelUrl?:string, reference?:string){
+// ---- add tracking + label to order, create fulfillment if needed ----
+async function applyTrackingAndLabel(
+  order:{ id:string, legacyId:string|number, fulfillments:any[] },
+  trackingNum?:string, trackingUrl?:string, labelUrl?:string, reference?:string
+){
+  // URL tracking UPS standard
+  const trackingLink = trackingNum
+    ? `https://www.ups.com/track?track=yes&trackNums=${trackingNum}`
+    : (trackingUrl || null);
+
   // 1) se c'è già un fulfillment, aggiorna tracking
   const existing = order.fulfillments?.[0];
   if (existing){
     const fid = String(existing.id).split("/").pop()!;
-    const r = await updateTracking(order.legacyId, fid, { number: trackingNum, url: trackingUrl, company: "UPS" });
+    const r = await updateTracking(order.legacyId, fid, { number: trackingNum, url: trackingLink, company: "UPS" });
     await setLabelMetafield(order.id, labelUrl, reference);
     if (labelUrl) await addNoteAttribute(order.legacyId, "spro_label_url", labelUrl);
     return { step:"update-tracking", rest:r };
@@ -207,7 +215,7 @@ async function applyTrackingAndLabel(order:{ id:string, legacyId:string|number, 
     return { step:"no-open-fulfillment-orders", detail: { all: fos.all } };
   }
 
-  const cr = await createFulfillment(order.legacyId, fos.list, { number: trackingNum, url: trackingUrl, company:"UPS" });
+  const cr = await createFulfillment(order.legacyId, fos.list, { number: trackingNum, url: trackingLink, company:"UPS" });
   await setLabelMetafield(order.id, labelUrl, reference);
   if (labelUrl) await addNoteAttribute(order.legacyId, "spro_label_url", labelUrl);
   return { step:"create-fulfillment", rest: cr };
@@ -226,7 +234,12 @@ export default async function handler(req: NextRequest){
   const merchantRef = body.merchant_reference || body.merchantRef;
   const reference   = body.reference || body.order; // numero spedizione SPRO
   const trackingNum = body.tracking || body.tracking_number;
-  const trackingUrl = body.tracking_url || (body.tracking && typeof body.tracking === "object" ? body.tracking.url : undefined);
+  const incomingUrl = body.tracking_url || (body.tracking && typeof body.tracking === "object" ? body.tracking.url : undefined);
+
+  // Costruiamo sempre il tracking UPS standard
+  const trackingUrl = trackingNum
+    ? `https://www.ups.com/track?track=yes&trackNums=${trackingNum}`
+    : incomingUrl || undefined;
 
   // Supporto ai vari formati di link etichetta
   let labelUrl =
@@ -236,7 +249,9 @@ export default async function handler(req: NextRequest){
     (typeof body.label === "string" && body.label.startsWith("http") ? body.label : undefined) ||
     (body.link && String(body.link).includes("spedirepro.com/bridge/label") ? body.link : undefined);
 
-  console.log("spedirepro: incoming", { merchantRef, reference, trackingNum, trackingUrl, labelUrl });
+  console.log("spedirepro: incoming", {
+    merchantRef, reference, trackingNum, trackingUrl, labelUrl_present: !!labelUrl
+  });
 
   if (!merchantRef) return bad(400,"missing-merchant_reference");
 
