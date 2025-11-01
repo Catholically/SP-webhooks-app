@@ -1,74 +1,118 @@
+// api/webhooks/spedirepro.ts
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
-function ok(d:any={}) { return new Response(JSON.stringify({ ok:true, ...d }), { status:200 }); }
-function bad(s:number,m:string,d?:any) { return new Response(JSON.stringify({ ok:false, error:m, ...(d?{detail:d}:{}) }), { status:s }); }
+function ok(data: any = {}) {
+  return new Response(JSON.stringify({ ok: true, ...data }), { status: 200 });
+}
+function bad(status: number, error: string, extra?: any) {
+  return new Response(JSON.stringify({ ok: false, error, ...(extra ?? {}) }), { status });
+}
 
-const WEBHOOK_TOKEN = (process.env.SPRO_WEBHOOK_TOKEN || "").trim();
-
-async function readBody(req: NextRequest) {
-  // 1) JSON
-  try { return { kind:"json", data: await req.json() }; } catch {}
-  // 2) Form-encoded
+async function parseBody(req: NextRequest): Promise<any> {
+  const ct = (req.headers.get("content-type") || "").toLowerCase();
   try {
-    const ct = req.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return await req.json();
     if (ct.includes("application/x-www-form-urlencoded")) {
       const txt = await req.text();
       const params = new URLSearchParams(txt);
-      const obj: Record<string,string> = {};
-      params.forEach((v,k)=>{ obj[k]=v; });
-      return { kind:"form", data: obj };
+      const o: Record<string, any> = {};
+      for (const [k, v] of params.entries()) o[k] = v;
+      // se qualcuno incapsula json in un campo "payload"
+      if (o.payload) {
+        try { return JSON.parse(o.payload); } catch {}
+      }
+      return o;
     }
-  } catch {}
-  // 3) Raw text
-  try { return { kind:"text", data: await req.text() }; } catch {}
-  return { kind:"none", data: null };
+    // fallback: prova JSON poi al testo puro
+    try { return await req.json(); } catch {}
+    return await req.text();
+  } catch {
+    return null;
+  }
+}
+
+type Extracted = {
+  merchantRef?: string;
+  reference?: string;
+  tracking?: string;
+  trackingUrl?: string;
+  labelUrl?: string;
+};
+
+function pickFirst(...vals: any[]): string | undefined {
+  for (const v of vals) {
+    if (v == null) continue;
+    const s = typeof v === "string" ? v.trim() : v;
+    if (typeof s === "string" && s) return s;
+  }
+  return undefined;
+}
+
+function extract(body: any): Extracted {
+  if (!body || typeof body !== "object") return {};
+  // molte possibili forme dai vari webhook
+  const merchantRef = pickFirst(
+    body.merchant_reference, body.merchantRef, body.merchant, body.order_name, body.order, body.name
+  );
+  const reference = pickFirst(
+    body.reference, body.order, body.shipment, body.shipment_number, body.ref, body.id
+  );
+  const tracking = pickFirst(
+    body.tracking, body.tracking_number, body.trackingNumber
+  );
+  const trackingUrl = pickFirst(
+    body.tracking_url, body.trackingUrl, body.tracking_link, body.trackingLink, body.url_tracking
+  );
+  const labelUrl = pickFirst(
+    body?.label?.link, body.label_link, body.labelUrl, body.label, body.url_label, body.label_url
+  );
+
+  return { merchantRef, reference, tracking, trackingUrl, labelUrl };
 }
 
 export default async function handler(req: NextRequest) {
-  const url = new URL(req.url);
-  const token = (url.searchParams.get("token") || "").trim();
-
-  // Log ingresso minimale
-  console.log("spedirepro: hit", { method:req.method, ua:req.headers.get("user-agent") || "", hasToken: !!token });
-
-  // Token check molto permissivo per debug iniziale
-  if (!WEBHOOK_TOKEN || token !== WEBHOOK_TOKEN) {
-    return bad(400, "invalid-token");
-  }
-
-  // SpedirePRO può pingare in GET per la verifica → rispondi 200
-  if (req.method === "GET" || req.method === "HEAD") {
-    return ok({ ping:true });
-  }
-
   if (req.method !== "POST") return bad(405, "method-not-allowed");
 
-  const body = await readBody(req);
-  console.log("spedirepro: parsed", body.kind);
+  const ua = req.headers.get("user-agent") || "";
+  const body = await parseBody(req);
 
-  // Normalizza payload in uno shape comune
-  let payload: any = {};
-  if (body.kind === "json" && body.data) payload = body.data;
-  else if (body.kind === "form" && body.data) payload = body.data;
-  else if (body.kind === "text" && typeof body.data === "string") {
-    try { payload = JSON.parse(body.data); } catch { payload = { raw: body.data }; }
-  } else {
-    return bad(400, "empty-body");
+  // estrai in modo resiliente
+  const ex = extract(body);
+
+  // log sintetico
+  console.log("spedirepro: hit", {
+    method: req.method,
+    ua,
+    hasToken: !!(new URL(req.url).searchParams.get("token")),
+  });
+  console.log("spedirepro: parsed json");
+
+  const incoming = {
+    merchantRef: ex.merchantRef,
+    reference: ex.reference,
+    tracking: ex.tracking,
+    hasLabel: !!ex.labelUrl,
+  };
+  console.log("spedirepro: incoming", incoming);
+
+  // se SpedirePro invia pings senza campi, rispondi 200 e termina
+  const hasAny = ex.merchantRef || ex.reference || ex.tracking || ex.labelUrl || ex.trackingUrl;
+  if (!hasAny) {
+    // log di debug con uno spezzone del body per capire la forma reale
+    const sample = typeof body === "string" ? body.slice(0, 400) : JSON.stringify(body).slice(0, 400);
+    console.warn("spedirepro: empty-or-unknown payload shape. sample:", sample);
+    return ok({ skipped: true, reason: "empty-payload" });
   }
 
-  // Estrai campi tipici se presenti
-  const merchantRef  = payload.merchant_reference || payload.merchantRef || payload.name;
-  const reference    = payload.reference || payload.order || payload.shipment || payload.shipment_number;
-  const tracking     = payload.tracking || payload.tracking_number || payload.trackingNum;
-  const tracking_url = payload.tracking_url || payload.trackingUrl;
-  const label_url    = payload.label?.link || payload.label_url || payload.labelUrl;
-
-  console.log("spedirepro: incoming", {
-    merchantRef, reference, tracking, hasLabel: !!label_url
+  // qui potresti: 1) fare fulfillment/tracking 2) salvare metafield label_url
+  // Poiché questo endpoint è SOLO ricezione SPRO, limitiamoci a confermare.
+  return ok({
+    received: true,
+    merchant_reference: ex.merchantRef || null,
+    reference: ex.reference || null,
+    tracking: ex.tracking || null,
+    tracking_url: ex.trackingUrl || null,
+    label_url: ex.labelUrl || null,
   });
-
-  // TODO: qui crea fulfillment e aggiorna metafield, se vuoi.
-  // Per ora conferma ricezione per far passare la verifica SPRO.
-  return ok({ received:true });
 }
