@@ -146,7 +146,26 @@ const token = url.searchParams.get("token") || "";
     reference: ex.reference || "",
     ...(ex.labelUrl ? { label_url: ex.labelUrl } : {}),
   });
-
+// Se abbiamo una label_url, aggiorna il tracking con quel link (se non già presente)
+if (ex.labelUrl && ex.tracking) {
+  const fr = await shopifyREST(`/orders/${orderId}/fulfillments.json`, { method: "GET" });
+  const fulfillments = fr.json?.fulfillments || [];
+  const last = fulfillments[0];
+  if (last?.id) {
+    await shopifyREST(`/fulfillments/${last.id}.json`, {
+      method: "PUT",
+      body: JSON.stringify({
+        fulfillment: {
+          tracking_number: ex.tracking,
+          tracking_url: ex.labelUrl,
+          tracking_company: "UPS",
+        },
+      }),
+    });
+    console.log("spedirepro: tracking updated with label URL");
+  }
+}
+  
   // fulfillment: se ci sono FO aperti crea un fulfillment con tracking; altrimenti prova update tracking
   if (ex.tracking) {
     const fos = await shopifyREST(`/orders/${orderId}/fulfillment_orders.json`, { method: "GET" });
