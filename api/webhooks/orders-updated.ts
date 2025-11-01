@@ -2,6 +2,7 @@
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
+// ENV
 const SHOP = process.env.SHOPIFY_SHOP!;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
 const SPRO_BASE = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
@@ -21,10 +22,7 @@ async function readBody(req: NextRequest){
       return JSON.parse(await decompressed.text());
     }
     return await req.json();
-  } catch (e:any) {
-    console.warn("orders-updated: invalid-json", String(e?.message||e));
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function gql(query: string, variables?: Record<string, any>) {
@@ -33,8 +31,7 @@ async function gql(query: string, variables?: Record<string, any>) {
     headers: { "X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables: variables || {} }),
   });
-  const text = await res.text();
-  let json:any; try{ json = JSON.parse(text); } catch {}
+  const text = await res.text(); let json:any; try{ json = JSON.parse(text);}catch{}
   if (!res.ok || json?.errors) return { ok:false, status:res.status, json, text };
   return { ok:true, json };
 }
@@ -46,7 +43,7 @@ function hasTag(input:any, tag:string){
   return false;
 }
 
-// Normalize address coming from REST or GraphQL
+// Normalizza indirizzo da REST/GraphQL, shipping o billing
 function normalizeAddress(a:any){
   if (!a) return null;
   const country =
@@ -66,31 +63,24 @@ function normalizeAddress(a:any){
     phone: a.phone || "",
     email: a.email || "",
   };
-
   if (!out.address1 || !out.city || !out.zip || !out.country) return null;
   return out;
 }
 
 async function sproCreateLabel(payload:any){
-  if (!SPRO_TOKEN) {
-    console.warn("orders-updated: SPRO_API_TOKEN missing, skip create-label");
-    return { ok:false, status:0, json:null, text:"missing SPRO_API_TOKEN" };
-  }
+  if (!SPRO_TOKEN) return { ok:false, status:0, json:null, text:"missing SPRO_API_TOKEN" };
   const res = await fetch(`${SPRO_BASE}/create-label`, {
     method: "POST",
-    headers: { Authorization: SPRO_TOKEN, "Content-Type": "application/json" },
+    headers: { Authorization: SPRO_TOKEN, "Content-Type":"application/json" },
     body: JSON.stringify(payload),
   });
-  const text = await res.text();
-  let json:any; try{ json = JSON.parse(text); } catch {}
-  if (!res.ok) return { ok:false, status: res.status, json, text };
-  return { ok:true, status: res.status, json, text };
+  const text = await res.text(); let json:any; try{ json = JSON.parse(text);}catch{}
+  if (!res.ok) return { ok:false, status:res.status, json, text };
+  return { ok:true, status:res.status, json, text };
 }
 
 export default async function handler(req: NextRequest){
-  if (req.method !== "POST") {
-    return new Response(JSON.stringify({ ok:false, error:"method-not-allowed" }), { status:405 });
-  }
+  if (req.method !== "POST") return new Response(JSON.stringify({ ok:false, error:"method-not-allowed" }), { status:405 });
 
   const raw:any = await readBody(req);
   if (!raw) return new Response(JSON.stringify({ ok:true, skipped:"invalid-json" }), { status:200 });
@@ -99,33 +89,43 @@ export default async function handler(req: NextRequest){
   const orderGid  = raw?.admin_graphql_api_id || null;
   const tags      = raw?.tags ?? raw?.tag_string;
 
-  // 1) trigger
+  // trigger
   if (!hasTag(tags, "SPRO-CREATE")) {
     return new Response(JSON.stringify({ ok:true, skipped:"no-SPRO-CREATE" }), { status:200 });
   }
 
-  // 2) address from REST
+  // 1) REST shipping → poi REST billing
   let ship = normalizeAddress(raw?.shipping_address);
+  if (!ship) {
+    const billingRest = raw?.billing_address ? { ...raw.billing_address, email: raw?.contact_email || raw?.email || "" } : null;
+    ship = normalizeAddress(billingRest);
+  }
 
-  // 3) if missing, fetch via GraphQL
+  // 2) GraphQL shipping → poi GraphQL billing, se ancora mancante
   if (!ship && orderGid) {
     const q = `query($id:ID!){
       order(id:$id){
-        shippingAddress{ name address1 address2 city province provinceCode zip countryCodeV2 phone }
         email
+        shippingAddress{ name address1 address2 city province provinceCode zip countryCodeV2 phone }
+        billingAddress{ name address1 address2 city province provinceCode zip countryCodeV2 phone }
       }
     }`;
     const r = await gql(q, { id: orderGid });
     if (r.ok) {
-      const g = jget(r.json, ["data","order","shippingAddress"]) || {};
-      g.email = jget(r.json, ["data","order","email"]) || "";
-      ship = normalizeAddress(g);
+      const email = jget(r.json,["data","order","email"]) || "";
+      const shipG = jget(r.json,["data","order","shippingAddress"]) || null;
+      if (shipG) shipG.email = email;
+      ship = normalizeAddress(shipG);
+      if (!ship) {
+        const billG = jget(r.json,["data","order","billingAddress"]) || null;
+        if (billG) billG.email = email;
+        ship = normalizeAddress(billG);
+      }
     }
   }
 
   if (!ship) {
-    console.warn("orders-updated: missing-shipping-address-normalized", { order: orderName });
-    return new Response(JSON.stringify({ ok:true, skipped:"no-shipping-address" }), { status:200 });
+    return new Response(JSON.stringify({ ok:true, skipped:"no-address-after-fallbacks", order: orderName }), { status:200 });
   }
 
   const payload = {
@@ -150,9 +150,12 @@ export default async function handler(req: NextRequest){
   };
 
   const sp = await sproCreateLabel(payload);
-  if (sp.ok && orderGid) {
+
+  if (orderGid) {
     // salva reference se presente
-    const ref = jget(sp.json,["reference"]) || jget(sp.json,["data","reference"]) || null;
+    const ref =
+      jget(sp.json,["reference"]) ||
+      jget(sp.json,["data","reference"]) || null;
     if (ref) {
       const m = `mutation($metafields:[MetafieldsSetInput!]!){
         metafieldsSet(metafields:$metafields){ userErrors{ message } }
@@ -160,7 +163,7 @@ export default async function handler(req: NextRequest){
       const metafields = [{ ownerId: orderGid, namespace:"spro", key:"reference", type:"single_line_text_field", value:String(ref) }];
       await gql(m, { metafields });
     }
-    // tag swap
+    // tag swap comunque, per evitare loop
     const m2 = `mutation($id:ID!){
       add: tagsAdd(id:$id, tags:["SPRO-SENT"]){ userErrors{ message } }
       rem: tagsRemove(id:$id, tags:["SPRO-CREATE"]){ userErrors{ message } }
