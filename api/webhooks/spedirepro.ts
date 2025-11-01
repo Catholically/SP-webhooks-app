@@ -17,8 +17,13 @@ const HOOK_TOKEN = process.env.SPRO_WEBHOOK_TOKEN!;
 const SPRO_BASE  = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
 const SPRO_TOKEN = process.env.SPRO_API_TOKEN || "";
 
+// ---------- Utils ----------
 async function readJson(req: NextRequest){ try { return await req.json(); } catch { return null; } }
 function bad(code:number,msg:string,data?:any){ return new Response(JSON.stringify({ ok:false, error:msg, data }), { status:code }); }
+function extractLabelUrlFromText(text:string){
+  const m = text.match(/https?:\/\/(?:www\.)?spedirepro\.com\/bridge\/label\/[A-Za-z0-9_-]+(?:\?[^"'\s<>\)]*)?/i);
+  return m ? m[0] : null;
+}
 
 async function shopifyGQL(query:string, variables?:Record<string,any>){
   const res = await fetch(`https://${SHOP}/admin/api/2025-10/graphql.json`, {
@@ -51,36 +56,46 @@ async function sproGetLabel(shipmentNumber: string){
 
   const bodies = [
     { order: shipmentNumber },
-    { reference: shipmentNumber }
+    { reference: shipmentNumber },
+    { shipment: shipmentNumber },
+    { shipment_number: shipmentNumber },
   ];
 
   for (const body of bodies){
-    console.log("spro get-label: calling with body", body);
-    const res = await fetch(`${SPRO_BASE}/get-label`, {
-      method: "POST",
-      headers: {
-        "X-Api-Key": SPRO_TOKEN,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-    const ct = res.headers.get("content-type") || "";
-    const text = await res.text();
-    console.log("SpedirePro /get-label ->", res.status, ct.slice(0,60), text.slice(0,200));
+    try{
+      console.log("spro get-label: try body", body);
+      const res = await fetch(`${SPRO_BASE}/get-label`, {
+        method: "POST",
+        headers: {
+          "X-Api-Key": SPRO_TOKEN,
+          "Content-Type": "application/json",
+          "Accept": "*/*",
+        },
+        body: JSON.stringify(body),
+      });
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
+      const text = await res.text();
+      console.log("SpedirePro /get-label ->", res.status, ct.slice(0,60), text.slice(0,160));
 
-    if (!ct.includes("application/json")) continue;
-    let json:any; try{ json=JSON.parse(text);}catch{ continue; }
-    if (res.ok){
-      const link =
-        json?.label?.link ||
-        json?.link ||
-        json?.url ||
-        json?.data?.label ||
-        json?.data?.link ||
-        json?.data?.url ||
-        null;
-      if (link) return { ok:true, link, json };
+      // 1) JSON standard
+      if (ct.includes("application/json")) {
+        let json:any; try{ json = JSON.parse(text);}catch{ json = null; }
+        if (res.ok && json){
+          const link =
+            json?.label?.link ||
+            json?.link || json?.url ||
+            json?.data?.label || json?.data?.link || json?.data?.url || null;
+          if (link) return { ok:true, link, json };
+        }
+      }
+
+      // 2) Risposta testo/HTML con link dentro
+      const fromText = extractLabelUrlFromText(text);
+      if (fromText) return { ok:true, link: fromText, json: { raw: "text", snippet: text.slice(0,200) } };
+
+      // 3) Altre risposte non utili → prova prossimo body
+    }catch(e:any){
+      console.warn("spro get-label error:", e?.message || String(e));
     }
   }
   return { ok:false, reason:"no-label-returned" };
@@ -155,7 +170,7 @@ async function updateTracking(orderLegacyId: string | number, fulfillmentId: str
       tracking_info: {
         number: tracking.number || null,
         url: tracking.url || null,
-        company: tracking.company || "UPS",
+        company: "UPS",
       }
     }
   };
@@ -241,7 +256,7 @@ export default async function handler(req: NextRequest){
     ? `https://www.ups.com/track?track=yes&trackNums=${trackingNum}`
     : incomingUrl || undefined;
 
-  // Supporto ai vari formati di link etichetta
+  // Supporto ai vari formati di link etichetta (dal webhook)
   let labelUrl =
     body.label?.link ||
     body.label_url ||
@@ -255,9 +270,11 @@ export default async function handler(req: NextRequest){
 
   if (!merchantRef) return bad(400,"missing-merchant_reference");
 
-  // Se label mancante ma abbiamo la reference, chiama /get-label
+  // Se label mancante ma abbiamo la reference, chiama /get-label (con parsing robusto)
+  let getLabelDebug:any = null;
   if (!labelUrl && reference){
     const gl = await sproGetLabel(reference);
+    getLabelDebug = gl.ok ? { ok:true } : { ok:false, reason: gl.reason };
     if (gl.ok) {
       labelUrl = gl.link;
       console.log("spro get-label: resolved labelUrl", labelUrl);
@@ -276,6 +293,6 @@ export default async function handler(req: NextRequest){
     order: order.name,
     label: labelUrl || null,
     step: result.step,
-    detail: result.rest?.json || result.detail || null
+    detail: result.rest?.json || result.detail || getLabelDebug || null
   }), { status:200 });
 }
