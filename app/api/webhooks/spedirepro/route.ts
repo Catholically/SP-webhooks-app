@@ -141,8 +141,8 @@ export async function POST(req: Request) {
   const orderGid = `gid://shopify/Order/${orderIdNum}`;
 
   await metafieldsSet(orderGid, {
-    reference: body.reference || "",
-    order_ref: body.order || "",
+    reference: body?.reference || "",
+    order_ref: body?.order || "",
     tracking,
     tracking_url: trackingUrl,
     label_url: labelUrl,
