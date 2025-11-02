@@ -1,153 +1,102 @@
-export const runtime = "edge";
+import type { NextRequest } from "next/server";
 
-type SproWebhook = {
-  update_type?: string;
-  merchant_reference?: string;
-  type?: string;
-  order?: string;
-  reference?: string;
-  tracking?: string;
-  courier?: string;
-  courier_code?: string;
-  courier_group?: string;
-  status?: string;
-  exception_status?: number;
-  tracking_url?: string;
-  label?: { link?: string; expire_at?: string };
-};
+const SHOPIFY_SHOP = process.env.SHOPIFY_SHOP!;
+const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN!;
+const SPRO_WEBHOOK_TOKEN = process.env.SPRO_WEBHOOK_TOKEN!; // simple shared token ?token=xxx
 
-const json = (status: number, obj: unknown) =>
-  new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
-
-function adminBase() {
-  const store = process.env.SHOPIFY_STORE || process.env.SHOPIFY_SHOP || "holy-trove";
-  const ver = process.env.SHOPIFY_API_VERSION || "2025-10";
-  return `https://${store}.myshopify.com/admin/api/${ver}`;
-}
-async function shopifyFetch(path: string, init?: RequestInit) {
-  const token = process.env.SHOPIFY_ADMIN_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || "";
-  return fetch(`${adminBase()}${path}`, {
-    ...init,
+async function shopifyGraphQL<T>(query: string, variables?: any): Promise<T> {
+  const r = await fetch(`https://${SHOPIFY_SHOP}/admin/api/2024-10/graphql.json`, {
+    method: "POST",
     headers: {
-      "X-Shopify-Access-Token": token,
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
       "Content-Type": "application/json",
-      ...(init?.headers || {}),
     },
+    body: JSON.stringify({ query, variables }),
+    cache: "no-store",
   });
-}
-async function findOrderIdByName(nameRaw: string): Promise<string | null> {
-  const name = nameRaw?.trim();
-  if (!name) return null;
-  const withHash = name.startsWith("#") ? name : `#${name}`;
-  const q = encodeURIComponent(withHash);
-  const r = await shopifyFetch(`/orders.json?status=any&name=${q}`, { method: "GET" });
-  if (!r.ok) return null;
-  const data = await r.json();
-  const id = data?.orders?.[0]?.id;
-  return id ? String(id) : null;
-}
-async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
-  const entries = Object.entries(kv).map(([key, value]) => ({
-    ownerId: orderGid,
-    namespace: "spedirepro",
-    key,
-    type: "single_line_text_field",
-    value,
-  }));
-  const q = `
-    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        userErrors { field message }
-      }
-    }`;
-  await shopifyFetch("/graphql.json", {
-    method: "POST",
-    body: JSON.stringify({ query: q, variables: { metafields: entries } }),
-  });
-}
-async function firstFO(orderGid: string): Promise<string | null> {
-  const q = `
-    query($id: ID!) {
-      order(id: $id) {
-        fulfillmentOrders(first: 5) { nodes { id status } }
-      }
-    }`;
-  const r = await shopifyFetch("/graphql.json", {
-    method: "POST",
-    body: JSON.stringify({ query: q, variables: { id: orderGid } }),
-  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`Shopify GQL ${r.status}: ${text}`);
+  }
   const json = await r.json();
-  return json?.data?.order?.fulfillmentOrders?.nodes?.[0]?.id || null;
+  if (json.errors) throw new Error(JSON.stringify(json.errors));
+  return json.data;
 }
-async function fulfill(foId: string, tracking: string, trackingUrl?: string, company?: string) {
-  const q = `
-    mutation fulfill($fulfillmentOrderId: ID!, $trackingInfo: FulfillmentTrackingInput) {
+
+async function orderIdByName(name: string): Promise<string | null> {
+  const q = /* GraphQL */ `
+    query($query: String!) {
+      orders(first:1, query:$query){ edges{ node{ id name } } }
+    }`;
+  const d = await shopifyGraphQL<any>(q, { query: `name:${JSON.stringify(name)}` });
+  return d.orders.edges[0]?.node?.id || null;
+}
+
+async function setMetafield(orderId: string, key: string, value: string, ns = "spedirepro") {
+  const q = /* GraphQL */ `
+    mutation($ownerId:ID!, $namespace:String!, $key:String!, $value:String!) {
+      metafieldsSet(metafields:[{ownerId:$ownerId,namespace:$namespace,key:$key,type:"single_line_text_field",value:$value}]){
+        userErrors{ field message }
+      }
+    }`;
+  await shopifyGraphQL(q, { ownerId: orderId, namespace: ns, key, value });
+}
+
+async function createFulfillment(orderId: string, trackingNumber: string, trackingUrl?: string) {
+  const q = /* GraphQL */ `
+    mutation Fulfill($orderId: ID!, $tracking: String!, $url: URL) {
       fulfillmentCreateV2(fulfillment: {
-        lineItemsByFulfillmentOrder: { fulfillmentOrderId: $fulfillmentOrderId }
-        trackingInfo: $trackingInfo
-        notifyCustomer: false
+        lineItemsByFulfillmentOrder: [],
+        notifyCustomer: true,
+        trackingInfo: { number: $tracking, url: $url, company: "UPS" }
+        orderId: $orderId
       }) {
-        fulfillment { id }
+        fulfillment { id status }
         userErrors { field message }
       }
     }`;
-  const vars = {
-    fulfillmentOrderId: foId,
-    trackingInfo: {
-      number: tracking,
-      url: trackingUrl || null,
-      company: company || "UPS",
-    },
-  };
-  await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
+  // Note: Using empty lineItemsByFulfillmentOrder lets Shopify auto-allocate remaining items.
+  await shopifyGraphQL(q, { orderId, tracking: trackingNumber, url: trackingUrl || null });
 }
 
-export async function POST(req: Request) {
-  // token check
-  const url = new URL(req.url);
-  const token = url.searchParams.get("token") || "";
-  const expected = process.env.SPRO_WEBHOOK_TOKEN || "";
-  if (!expected || token !== expected) {
-    return json(401, { ok: false, error: "unauthorized" });
+export const runtime = "nodejs";
+
+export async function POST(req: NextRequest) {
+  const token = req.nextUrl.searchParams.get("token");
+  if (!token || token !== SPRO_WEBHOOK_TOKEN) {
+    return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
   }
 
-  // parse body
-  let body: SproWebhook | null = null;
+  const body = await req.json().catch(() => ({} as any));
+
+  // Expected payload from SpedirePro
+  const merchantRef: string = body.merchant_reference || body.order_name || body.name;  // e.g. "#3557…"
+  const reference: string = body.reference || body.ref || "";
+  const tracking: string = body.tracking || body.tracking_number || "";
+  const trackingUrl: string =
+    body.tracking_url ||
+    (tracking ? `https://www.ups.com/track?track=yes&trackNums=${encodeURIComponent(tracking)}` : "");
+  const labelUrl: string =
+    body.label?.link || body.label_url || (reference ? `https://www.spedirepro.com/le-tue-spedizioni/dettagli/${reference}/label` : "");
+
+  if (!merchantRef) {
+    return new Response(JSON.stringify({ ok: false, error: "missing merchant_reference" }), { status: 400 });
+  }
+
+  const orderId = await orderIdByName(merchantRef);
+  if (!orderId) {
+    return Response.json({ ok: true, skipped: "order-not-found", ref: merchantRef });
+  }
+
   try {
-    body = await req.json();
-  } catch {
-    return json(400, { ok: false, error: "bad json" });
+    if (tracking) {
+      await createFulfillment(orderId, tracking, trackingUrl);
+    }
+    if (reference) await setMetafield(orderId, "reference", reference);
+    if (labelUrl) await setMetafield(orderId, "label_url", labelUrl);
+
+    return Response.json({ ok: true, received: true, merchant_reference: merchantRef, reference, tracking, tracking_url: trackingUrl, label_url: labelUrl });
+  } catch (e: any) {
+    return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500 });
   }
-
-  const merchantRef = body?.merchant_reference || "";
-  const tracking = body?.tracking || "";
-  const trackingUrl = body?.tracking_url || body?.label?.link || "";
-  const labelUrl = body?.label?.link || "";
-  const courier = body?.courier || body?.courier_group || "UPS";
-  if (!merchantRef || !tracking) {
-    return json(200, { ok: true, skipped: "missing merchant_reference or tracking" });
-  }
-
-  const orderIdNum = await findOrderIdByName(merchantRef);
-  if (!orderIdNum) {
-    return json(200, { ok: true, skipped: "order not found by name", merchant_reference: merchantRef });
-  }
-  const orderGid = `gid://shopify/Order/${orderIdNum}`;
-
-  await metafieldsSet(orderGid, {
-    reference: body.reference || "",
-    order_ref: body.order || "",
-    tracking,
-    tracking_url: trackingUrl,
-    label_url: labelUrl,
-    courier,
-  });
-
-  const doFulfill = (process.env.FULFILLMENT_ENABLE || "true") === "true";
-  if (doFulfill) {
-    const foId = await firstFO(orderGid);
-    if (foId) await fulfill(foId, tracking, trackingUrl, courier);
-  }
-
-  return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
 }
