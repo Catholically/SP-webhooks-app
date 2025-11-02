@@ -70,6 +70,58 @@ type ShopifyOrder = {
 const json = (status: number, obj: unknown) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 
+// Shopify API helper
+async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAdd: string[]) {
+  const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+  const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+  const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+  const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+  const orderGid = `gid://shopify/Order/${orderId}`;
+
+  // Remove tags
+  if (tagsToRemove.length > 0) {
+    const removeQuery = `
+      mutation tagsRemove($id: ID!, $tags: [String!]!) {
+        tagsRemove(id: $id, tags: $tags) {
+          userErrors { field message }
+        }
+      }`;
+    await fetch(`${adminUrl}/graphql.json`, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: removeQuery,
+        variables: { id: orderGid, tags: tagsToRemove },
+      }),
+    });
+  }
+
+  // Add tags
+  if (tagsToAdd.length > 0) {
+    const addQuery = `
+      mutation tagsAdd($id: ID!, $tags: [String!]!) {
+        tagsAdd(id: $id, tags: $tags) {
+          userErrors { field message }
+        }
+      }`;
+    await fetch(`${adminUrl}/graphql.json`, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: addQuery,
+        variables: { id: orderGid, tags: tagsToAdd },
+      }),
+    });
+  }
+}
+
 export async function POST(req: Request) {
   const url = new URL(req.url);
   const debug = url.searchParams.get("debug") === "1";
@@ -127,7 +179,7 @@ export async function POST(req: Request) {
   }
 
   const receiverPhone =
-    first(to.phone, order.billing_address?.phone, "+0000000000") || "+0000000000";
+    first(to.phone, order.billing_address?.phone, "+15555555555") || "+15555555555";
 
   const receiverEmail =
     first(order.email, order.contact_email, order.customer?.email, SENDER.email) || SENDER.email;
@@ -189,6 +241,14 @@ export async function POST(req: Request) {
     try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
     console.error("orders-updated: SpedirePro error", { status: r.status, url: `${SPRO_API_BASE}/create-label`, body: parsed });
     return json(200, { ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
+  }
+
+  // Label created successfully - update tags
+  try {
+    await updateOrderTags(order.id, ["SPRO-CREATE"], ["LABEL-CREATED"]);
+  } catch (error) {
+    console.error("Failed to update order tags:", error);
+    // Don't fail the whole request if tag update fails
   }
 
   return json(200, { ok: true, create_label_response: text });
