@@ -1,21 +1,19 @@
-export const runtime = "edge";
+import type { NextApiRequest, NextApiResponse } from "next";
 
-// ---- utils env compat ----
+// -------- utils ----------
 const first = (...vals: (string | undefined | null)[]) =>
   vals.find(v => v !== undefined && v !== null && String(v).trim() !== "")?.toString().trim();
 
-const env = (name: string, def?: string) =>
-  first(process.env[name], def);
+const env = (k: string, def?: string) => {
+  const v = process.env[k];
+  return v == null || v === "" ? def : v;
+};
 
-// Legge chiave API SPRO (supporta entrambi i nomi)
+// Env compat
 const SPRO_API_KEY = first(env("SPRO_API_KEY"), env("SPRO_API_TOKEN"));
-// Base API SPRO
 const SPRO_API_BASE = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
+const SPRO_TRIGGER_TAG = env("SPRO_TRIGGER_TAG"); // optional gate
 
-// Gating opzionale su tag
-const SPRO_TRIGGER_TAG = env("SPRO_TRIGGER_TAG"); // se vuoto, nessun gate
-
-// Mittente: supporto a nomi vecchi e nuovi
 const SENDER = {
   name: env("SENDER_NAME"),
   email: env("SENDER_EMAIL"),
@@ -27,9 +25,8 @@ const SENDER = {
   street: first(env("SENDER_STREET"), env("SENDER_ADDR1")),
 };
 
-// Dimensioni/peso: supporto a DEFAULT_DIM_CM ("12x3x18") o singoli campi
 function parseDims() {
-  const dimStr = env("DEFAULT_DIM_CM"); // es. "12x3x18"
+  const dimStr = env("DEFAULT_DIM_CM"); // e.g. "12x3x18"
   let w = Number(env("DEFAULT_PARCEL_W_CM", "12"));
   let h = Number(env("DEFAULT_PARCEL_H_CM", "3"));
   let d = Number(env("DEFAULT_PARCEL_D_CM", "18"));
@@ -40,90 +37,92 @@ function parseDims() {
   return { w, h, d };
 }
 const { w: DEF_W, h: DEF_H, d: DEF_D } = parseDims();
-const DEF_WEIGHT_KG = Number(first(env("DEFAULT_WEIGHT_KG"), "0.05")); // se non c'è total_weight
+const DEF_WEIGHT_KG = Number(first(env("DEFAULT_WEIGHT_KG"), "0.05"));
+const DEFAULT_CARRIER_NAME = env("DEFAULT_CARRIER_NAME"); // optional
 
-// Courier: se definito lo usiamo, altrimenti courier_fallback=true
-const DEFAULT_CARRIER_NAME = env("DEFAULT_CARRIER_NAME");
-
-// ---- tipi minimi ordine ----
 type ShopifyOrder = {
   id: number;
-  name: string; // es "#35583..."
+  name: string; // "#355..."
   tags?: string;
   total_weight?: number; // grams
+  line_items?: Array<{ title?: string }>;
   shipping_address?: {
     name?: string;
     first_name?: string;
     last_name?: string;
     phone?: string;
-    country_code?: string; // "US"
-    province_code?: string; // "WA"
+    country_code?: string;
+    province_code?: string;
     city?: string;
     zip?: string;
     address1?: string;
   };
-  billing_address?: {
-    phone?: string;
-  };
-  line_items?: Array<{ title?: string }>;
+  billing_address?: { phone?: string };
 };
 
-const ok = (o: unknown) =>
-  new Response(JSON.stringify(o), { status: 200, headers: { "content-type": "application/json" } });
-const bad = (s: number, m: string, extra?: any) =>
-  new Response(JSON.stringify({ ok: false, error: m, ...(extra || {}) }), {
-    status: s, headers: { "content-type": "application/json" },
-  });
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST" && req.query.debug !== "1") {
+    res.setHeader("Allow", "POST");
+    return res.status(405).json({ ok: false, error: "method not allowed" });
+  }
 
-export async function POST(req: Request) {
-  // parse payload (può arrivare come {order:{...}} o direttamente {...})
+  // Parse order payload
   let order: ShopifyOrder | null = null;
   try {
-    const payload = await req.json();
+    const payload = req.body && typeof req.body === "string" ? JSON.parse(req.body) : req.body;
     order = (payload?.order || payload) as ShopifyOrder;
   } catch {
-    return bad(400, "bad json");
+    return res.status(400).json({ ok: false, error: "bad json" });
+  }
+
+  if (req.query.debug === "1") {
+    // Return what we WOULD send to SpedirePro to verify envs
+    return res.status(200).json({
+      ok: true,
+      debug: true,
+      SENDER,
+      SPRO_API_BASE,
+      hasApiKey: !!SPRO_API_KEY,
+      triggerTag: SPRO_TRIGGER_TAG || "(none)",
+      orderName: order?.name || "(none)",
+    });
   }
 
   if (!order?.name) {
-    return ok({ ok: true, skipped: "no order name" });
+    return res.status(200).json({ ok: true, skipped: "no order name" });
   }
 
-  // opzionale: gating su tag
+  // Optional gate on tag
   if (SPRO_TRIGGER_TAG) {
-    const tags = (order.tags || "").toLowerCase();
-    if (!tags.split(",").map(s => s.trim()).includes(SPRO_TRIGGER_TAG.toLowerCase())) {
-      return ok({ ok: true, skipped: true, reason: `tag-missing-${SPRO_TRIGGER_TAG}`, order: order.name });
+    const hasTag = (order.tags || "")
+      .split(",")
+      .map(s => s.trim().toLowerCase())
+      .includes(SPRO_TRIGGER_TAG.toLowerCase());
+    if (!hasTag) {
+      return res.status(200).json({ ok: true, skipped: true, reason: `tag-missing-${SPRO_TRIGGER_TAG}`, order: order.name });
     }
   }
 
-  // verifica mittente completo
+  // Validate sender envs
   const missingSender = Object.entries(SENDER)
     .filter(([_, v]) => !v)
     .map(([k]) => k);
   if (missingSender.length) {
-    return bad(500, "sender env incomplete", { missing: missingSender });
+    return res.status(500).json({ ok: false, error: "sender env incomplete", missing: missingSender });
   }
 
   const to = order.shipping_address;
   if (!to?.country_code || !to?.address1 || !to?.zip || !to?.city) {
-    return ok({ ok: true, skipped: "missing shipping address fields" });
+    return res.status(200).json({ ok: true, skipped: "missing shipping address fields" });
   }
 
-  // phone: se manca in shipping, prova da billing, altrimenti placeholder
   const receiverPhone = first(to.phone, order.billing_address?.phone, "+0000000000");
-
-  // peso: se c'è total_weight (g) -> kg, altrimenti default kg
   const weightKg = order.total_weight && order.total_weight > 0
     ? Math.max(0.01, order.total_weight / 1000)
     : DEF_WEIGHT_KG;
 
-  // pacco
-  const pkg = { weight: weightKg, width: DEF_W, height: DEF_H, depth: DEF_D };
-
-  // corpo per SPRO
   const body: any = {
-    merchant_reference: order.name, // importantissimo per match al ritorno
+    merchant_reference: order.name,
     sender: {
       name: SENDER.name,
       email: SENDER.email,
@@ -136,7 +135,7 @@ export async function POST(req: Request) {
     },
     receiver: {
       name: first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer",
-      email: "", // opzionale
+      email: "", // optional
       phone: receiverPhone,
       country: to.country_code,
       province: to.province_code || "",
@@ -144,28 +143,23 @@ export async function POST(req: Request) {
       postcode: to.zip,
       street: to.address1,
     },
-    packages: [pkg],
+    packages: [{ weight: weightKg, width: DEF_W, height: DEF_H, depth: DEF_D }],
     content: {
       description: order.line_items?.[0]?.title || "Order items",
       amount: 10.0,
     },
   };
-
-  if (DEFAULT_CARRIER_NAME) {
-    body.courier = DEFAULT_CARRIER_NAME;
-  } else {
-    body.courier_fallback = true;
-  }
+  if (DEFAULT_CARRIER_NAME) body.courier = DEFAULT_CARRIER_NAME;
+  else body.courier_fallback = true;
 
   if (!SPRO_API_KEY) {
-    return bad(500, "missing SPRO_API_KEY/SPRO_API_TOKEN");
+    return res.status(500).json({ ok: false, error: "missing SPRO_API_KEY/SPRO_API_TOKEN" });
   }
 
-  // chiamata a SpedirePro
   const r = await fetch(`${SPRO_API_BASE}/create-label`, {
     method: "POST",
     headers: {
-      "X-Api-Key": SPRO_API_KEY,
+      "X-Api-Key": SPRO_API_KEY!,
       "Content-Type": "application/json",
       "Accept": "application/json",
     },
@@ -177,8 +171,8 @@ export async function POST(req: Request) {
     let parsed: any;
     try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
     console.error("orders-updated: SpedirePro error", { status: r.status, url: `${SPRO_API_BASE}/create-label`, body: parsed });
-    return ok({ ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
+    return res.status(200).json({ ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
   }
 
-  return ok({ ok: true, create_label_response: text });
+  return res.status(200).json({ ok: true, create_label_response: text });
 }
