@@ -2,117 +2,93 @@
 import type { NextRequest } from "next/server";
 export const config = { runtime: "edge" };
 
-function ok(data: any = {}) {
-  return new Response(JSON.stringify({ ok: true, ...data }), { status: 200 });
-}
-function bad(status: number, error: string, extra?: any) {
-  return new Response(JSON.stringify({ ok: false, error, ...(extra ?? {}) }), { status });
-}
+/**
+ * SpedirePro webhook receiver
+ *
+ * Env variables required:
+ * - SPRO_WEBHOOK_TOKEN    shared secret for webhook validation
+ *
+ * Notes:
+ * SpedirePro will POST here after asynchronous events (label creation, etc.)
+ * using the endpoint configured under IMPOSTAZIONI → App e Integrazioni → API
+ */
 
-async function parseBody(req: NextRequest): Promise<any> {
+function json(status: number, data: any) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+const ok  = (d:any={}) => json(200, { ok:true, ...d });
+const bad = (s:number,e:string,x?:any)=> json(s, { ok:false, error:e, ...(x??{}) });
+
+async function parseBody(req: NextRequest) {
   const ct = (req.headers.get("content-type") || "").toLowerCase();
   try {
     if (ct.includes("application/json")) return await req.json();
     if (ct.includes("application/x-www-form-urlencoded")) {
-      const txt = await req.text();
-      const params = new URLSearchParams(txt);
-      const o: Record<string, any> = {};
-      for (const [k, v] of params.entries()) o[k] = v;
-      // se qualcuno incapsula json in un campo "payload"
-      if (o.payload) {
-        try { return JSON.parse(o.payload); } catch {}
-      }
-      return o;
+      const raw = await req.text();
+      const params = new URLSearchParams(raw);
+      const obj: Record<string,string> = {};
+      for (const [k,v] of params.entries()) obj[k]=v;
+      if (obj.payload) { try { return JSON.parse(obj.payload); } catch { return obj; } }
+      return obj;
     }
-    // fallback: prova JSON poi al testo puro
-    try { return await req.json(); } catch {}
-    return await req.text();
-  } catch {
-    return null;
-  }
+    const raw = await req.text();
+    try { return JSON.parse(raw); } catch { return { raw }; }
+  } catch { return null; }
 }
 
 type Extracted = {
-  merchantRef?: string;
+  merchant_reference?: string;
   reference?: string;
   tracking?: string;
-  trackingUrl?: string;
-  labelUrl?: string;
+  tracking_url?: string;
+  label_url?: string;
 };
 
-function pickFirst(...vals: any[]): string | undefined {
-  for (const v of vals) {
-    if (v == null) continue;
-    const s = typeof v === "string" ? v.trim() : v;
-    if (typeof s === "string" && s) return s;
-  }
-  return undefined;
-}
+const pick = (...v:any[]) => v.find(x => x !== undefined && x !== null && x !== "");
 
-function extract(body: any): Extracted {
-  if (!body || typeof body !== "object") return {};
-  // molte possibili forme dai vari webhook
-  const merchantRef = pickFirst(
-    body.merchant_reference, body.merchantRef, body.merchant, body.order_name, body.order, body.name
-  );
-  const reference = pickFirst(
-    body.reference, body.order, body.shipment, body.shipment_number, body.ref, body.id
-  );
-  const tracking = pickFirst(
-    body.tracking, body.tracking_number, body.trackingNumber
-  );
-  const trackingUrl = pickFirst(
-    body.tracking_url, body.trackingUrl, body.tracking_link, body.trackingLink, body.url_tracking
-  );
-  const labelUrl = pickFirst(
-    body?.label?.link, body.label_link, body.labelUrl, body.label, body.url_label, body.label_url
-  );
-
-  return { merchantRef, reference, tracking, trackingUrl, labelUrl };
+function extract(b:any): Extracted {
+  if (!b || typeof b !== "object") return {};
+  const merchant_reference = pick(b.merchant_reference, b.merchantRef, b.order_name, b.order, b.name);
+  const reference           = pick(b.reference, b.shipment, b.shipment_number, b.ref, b.id);
+  const tracking            = pick(b.tracking, b.tracking_number, b.trackingNumber);
+  const tracking_url        = pick(b.tracking_url, b.trackingUrl, b.tracking_link, b.trackingLink);
+  const label_url           = pick(b.label?.link, b.label?.url, b.label_url, b.labelUrl);
+  return { merchant_reference, reference, tracking, tracking_url, label_url };
 }
 
 export default async function handler(req: NextRequest) {
   if (req.method !== "POST") return bad(405, "method-not-allowed");
 
-  const ua = req.headers.get("user-agent") || "";
+  // Validate token to prevent spoofing
+  const expected = process.env.SPRO_WEBHOOK_TOKEN || "";
+  if (!expected) return bad(500, "missing-env-SPRO_WEBHOOK_TOKEN");
+  const provided = new URL(req.url).searchParams.get("token") || req.headers.get("x-webhook-token") || "";
+  if (provided !== expected) return bad(401, "invalid-token");
+
   const body = await parseBody(req);
-
-  // estrai in modo resiliente
-  const ex = extract(body);
-
-  // log sintetico
-  console.log("spedirepro: hit", {
-    method: req.method,
-    ua,
-    hasToken: !!(new URL(req.url).searchParams.get("token")),
-  });
-  console.log("spedirepro: parsed json");
-
-  const incoming = {
-    merchantRef: ex.merchantRef,
-    reference: ex.reference,
-    tracking: ex.tracking,
-    hasLabel: !!ex.labelUrl,
-  };
-  console.log("spedirepro: incoming", incoming);
-
-  // se SpedirePro invia pings senza campi, rispondi 200 e termina
-  const hasAny = ex.merchantRef || ex.reference || ex.tracking || ex.labelUrl || ex.trackingUrl;
-  if (!hasAny) {
-    // log di debug con uno spezzone del body per capire la forma reale
-    const sample = typeof body === "string" ? body.slice(0, 400) : JSON.stringify(body).slice(0, 400);
-    console.warn("spedirepro: empty-or-unknown payload shape. sample:", sample);
+  if (!body || (typeof body === "object" && Object.keys(body).length === 0)) {
     return ok({ skipped: true, reason: "empty-payload" });
   }
 
-  // qui potresti: 1) fare fulfillment/tracking 2) salvare metafield label_url
-  // Poiché questo endpoint è SOLO ricezione SPRO, limitiamoci a confermare.
+  const ex = extract(body);
+
+  // Basic log for verification (visible in console)
+  console.log("SpedirePro webhook received", {
+    merchant_reference: ex.merchant_reference,
+    reference: ex.reference,
+    tracking: ex.tracking,
+    label: ex.label_url ? "yes" : "no"
+  });
+
   return ok({
     received: true,
-    merchant_reference: ex.merchantRef || null,
+    merchant_reference: ex.merchant_reference || null,
     reference: ex.reference || null,
     tracking: ex.tracking || null,
-    tracking_url: ex.trackingUrl || null,
-    label_url: ex.labelUrl || null,
+    tracking_url: ex.tracking_url || null,
+    label_url: ex.label_url || null,
   });
 }
