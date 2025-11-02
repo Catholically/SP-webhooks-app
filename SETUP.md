@@ -6,7 +6,7 @@ This guide will help you configure the SpedirePro integration for automatic labe
 
 **Flow:**
 1. Shopify webhook → `/api/webhooks/orders-updated` → Creates label via SpedirePro API
-2. SpedirePro webhook → `/api/webhooks/spedirepro` → Updates Shopify order with tracking & label URL
+2. SpedirePro webhook → `/api/webhooks/spedirepro` → Updates Shopify order with tracking & label URL + **Auto-fulfills order**
 
 ---
 
@@ -81,12 +81,6 @@ SPRO_WEBHOOK_TOKEN=your_random_secret_token_here
 openssl rand -hex 32
 ```
 
-### Fulfillment Options
-
-```bash
-# Auto-fulfill orders when tracking received (default: true)
-FULFILLMENT_ENABLE=true
-```
 
 ---
 
@@ -204,7 +198,7 @@ If you set `SPRO_TRIGGER_TAG`, only orders with that tag will trigger label crea
 
 1. Manually trigger SpedirePro webhook (or wait for real tracking update)
 2. Check Shopify order metafields for tracking data
-3. Verify fulfillment was created (if `FULFILLMENT_ENABLE=true`)
+3. Verify fulfillment was created automatically with tracking number
 
 ---
 

@@ -149,10 +149,10 @@ export async function POST(req: Request) {
     courier,
   });
 
-  const doFulfill = (process.env.FULFILLMENT_ENABLE || "true") === "true";
-  if (doFulfill) {
-    const foId = await firstFO(orderGid);
-    if (foId) await fulfill(foId, tracking, trackingUrl, courier);
+  // Auto-fulfill the order with tracking information
+  const foId = await firstFO(orderGid);
+  if (foId) {
+    await fulfill(foId, tracking, trackingUrl, courier);
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
