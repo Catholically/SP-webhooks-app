@@ -57,16 +57,27 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
     type: "single_line_text_field",
     value,
   }));
+
+  console.log("Setting metafields:", entries);
+
   const q = `
     mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
+        metafields { key value }
         userErrors { field message }
       }
     }`;
-  await shopifyFetch("/graphql.json", {
+  const r = await shopifyFetch("/graphql.json", {
     method: "POST",
     body: JSON.stringify({ query: q, variables: { metafields: entries } }),
   });
+
+  const result = await r.json();
+  if (result.data?.metafieldsSet?.userErrors?.length > 0) {
+    console.error("Metafields errors:", result.data.metafieldsSet.userErrors);
+  } else {
+    console.log("Metafields created:", result.data?.metafieldsSet?.metafields);
+  }
 }
 
 async function firstFO(orderGid: string): Promise<string | null> {
