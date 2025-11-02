@@ -120,6 +120,7 @@ export async function POST(req: Request) {
   let body: SproWebhook | null = null;
   try {
     body = await req.json();
+    console.log("SpedirePro webhook received:", JSON.stringify(body, null, 2));
   } catch {
     return json(400, { ok: false, error: "bad json" });
   }
@@ -129,6 +130,16 @@ export async function POST(req: Request) {
   const trackingUrl = body?.tracking_url || body?.label?.link || "";
   const labelUrl = body?.label?.link || "";
   const courier = body?.courier || body?.courier_group || "UPS";
+
+  console.log("Extracted values:", {
+    merchantRef,
+    tracking,
+    trackingUrl,
+    labelUrl,
+    courier,
+    rawCourier: body?.courier,
+    rawCourierGroup: body?.courier_group
+  });
 
   if (!merchantRef || !tracking) {
     return json(200, { ok: true, skipped: "missing merchant_reference or tracking" });
@@ -146,8 +157,11 @@ export async function POST(req: Request) {
     tracking,
     tracking_url: trackingUrl,
     label_url: labelUrl,
+    ldv_url: labelUrl,  // Aggiunto per compatibilità
     courier,
   });
+
+  console.log("Metafields set successfully for order:", orderIdNum);
 
   // Auto-fulfill the order with tracking information
   const foId = await firstFO(orderGid);
