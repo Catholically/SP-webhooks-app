@@ -81,12 +81,12 @@ function getItalianProvinceFromCAP(cap: string): string | null {
   const capMap: { [key: string]: string } = {
     // Lazio
     "00": "RM", "01": "VT", "02": "RI", "03": "FR", "04": "LT",
-    // Lombardia
-    "20": "MI", "21": "VA", "22": "CO", "23": "LC", "24": "BG", "25": "BS", "26": "CR", "27": "PV", "28": "NO",
     // Piemonte
     "10": "TO", "12": "CN", "13": "VC", "14": "AT", "15": "AL", "28": "NO",
     // Liguria
     "16": "GE", "17": "SV", "18": "IM", "19": "SP",
+    // Lombardia
+    "20": "MI", "21": "VA", "22": "CO", "23": "LC", "24": "BG", "25": "BS", "26": "CR", "27": "PV",
     // Veneto
     "30": "VE", "31": "TV", "32": "BL", "33": "UD", "34": "TS", "35": "PD", "36": "VI", "37": "VR", "38": "TN", "39": "BZ",
     // Emilia-Romagna
@@ -96,11 +96,11 @@ function getItalianProvinceFromCAP(cap: string): string | null {
     // Marche
     "60": "AN", "61": "PU", "62": "MC", "63": "AP",
     // Umbria
-    "05": "PG", "06": "PG",
+    "05": "PG", "06": "TR",
     // Abruzzo
     "64": "TE", "65": "PE", "66": "CH", "67": "AQ",
     // Molise
-    "86": "CB", "86": "IS",
+    "86": "CB",
     // Campania
     "80": "NA", "81": "CE", "82": "BN", "83": "AV", "84": "SA",
     // Puglia
@@ -108,11 +108,11 @@ function getItalianProvinceFromCAP(cap: string): string | null {
     // Basilicata
     "75": "MT", "85": "PZ",
     // Calabria
-    "87": "CS", "88": "CZ", "89": "RC", "88": "KR", "89": "VV",
+    "87": "CS", "88": "CZ", "89": "RC",
     // Sicilia
     "90": "PA", "91": "TP", "92": "AG", "93": "CL", "94": "RG", "95": "CT", "96": "SR", "97": "EN", "98": "ME",
     // Sardegna
-    "07": "SS", "08": "CA", "09": "CA",
+    "07": "SS", "08": "NU", "09": "CA",
   };
 
   return capMap[prefix] || null;
