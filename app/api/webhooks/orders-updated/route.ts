@@ -12,18 +12,29 @@ const env = (k: string, def?: string) => {
 // SpedirePro envs (support legacy names)
 const SPRO_API_KEY = first(env("SPRO_API_KEY"), env("SPRO_API_TOKEN"));
 const SPRO_API_BASE = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
-const SPRO_CREATE_TAG = "SPRO-CREATE"; // Required tag to trigger label creation
 
-// Sender envs (support both old/new names)
-const SENDER = {
-  name: env("SENDER_NAME"),
-  email: env("SENDER_EMAIL"),
-  phone: env("SENDER_PHONE"),
-  country: env("SENDER_COUNTRY"),
-  province: first(env("SENDER_PROVINCE"), env("SENDER_PROV")),
-  city: env("SENDER_CITY"),
-  postcode: first(env("SENDER_POSTCODE"), env("SENDER_ZIP")),
-  street: first(env("SENDER_STREET"), env("SENDER_ADDR1")),
+// Multiple senders configuration (hardcoded)
+const SENDERS = {
+  MI: {
+    name: "Roberta Parma",
+    email: "robykz@gmail.com",
+    phone: "+393935148686",
+    country: "IT",
+    province: "MI",
+    city: "Inzago",
+    postcode: "20065",
+    street: "Via degli Oleandri 3",
+  },
+  RM: {
+    name: "Roberta Parma",
+    email: "robykz@gmail.com",
+    phone: "+393935148686",
+    country: "IT",
+    province: "RM",
+    city: "Fiumicino",
+    postcode: "00054",
+    street: "Viale Donato Bramante 67",
+  },
 };
 
 // Dimensions & weight (support DEFAULT_DIM_CM "WxHxD")
@@ -189,8 +200,8 @@ export async function POST(req: Request) {
       debug: true,
       hasApiKey: !!SPRO_API_KEY,
       SPRO_API_BASE,
-      requiredTag: SPRO_CREATE_TAG,
-      SENDER,
+      availableTags: Object.keys(SENDERS).map(k => `${k}-CREATE`),
+      SENDERS,
       orderName: order?.name || "(none)",
     });
   }
@@ -199,27 +210,36 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "no order name" });
   }
 
-  // Require SPRO-CREATE tag to trigger label creation
-  const hasCreateTag = (order.tags || "")
+  // Detect CREATE tag (MI-CREATE, RM-CREATE, etc.) and extract sender code
+  const tags = (order.tags || "")
     .split(",")
-    .map(s => s.trim().toUpperCase())
-    .includes(SPRO_CREATE_TAG);
+    .map(s => s.trim().toUpperCase());
 
-  if (!hasCreateTag) {
+  let senderCode: string | null = null;
+  let usedTag: string | null = null;
+
+  for (const tag of tags) {
+    if (tag.endsWith("-CREATE")) {
+      const code = tag.replace("-CREATE", "");
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        break;
+      }
+    }
+  }
+
+  if (!senderCode || !usedTag) {
     return json(200, {
       ok: true,
       skipped: true,
-      reason: "tag-missing-SPRO-CREATE",
+      reason: "no-valid-create-tag",
       order: order.name,
-      message: "Add 'SPRO-CREATE' tag to order to trigger label creation"
+      message: `Add one of these tags to trigger label creation: ${Object.keys(SENDERS).map(k => `${k}-CREATE`).join(", ")}`
     });
   }
 
-  // Validate sender envs
-  const missingSender = Object.entries(SENDER).filter(([_, v]) => !v).map(([k]) => k);
-  if (missingSender.length) {
-    return json(500, { ok: false, error: "sender env incomplete", missing: missingSender });
-  }
+  const SENDER = SENDERS[senderCode as keyof typeof SENDERS];
 
   const to = order.shipping_address;
   if (!to?.country_code || !to?.address1 || !to?.zip || !to?.city) {
@@ -305,9 +325,9 @@ export async function POST(req: Request) {
     return json(200, { ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
   }
 
-  // Label created successfully - update tags
+  // Label created successfully - update tags (remove MI-CREATE/RM-CREATE, add LABEL-CREATED)
   try {
-    await updateOrderTags(order.id, ["SPRO-CREATE"], ["LABEL-CREATED"]);
+    await updateOrderTags(order.id, [usedTag], ["LABEL-CREATED"]);
   } catch (error) {
     console.error("Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
