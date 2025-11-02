@@ -178,16 +178,6 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "missing shipping address fields" });
   }
 
-  // Per Italia, la provincia è obbligatoria
-  if (to.country_code === "IT" && !to.province_code) {
-    return json(200, {
-      ok: true,
-      skipped: "missing province for Italian address",
-      order: order.name,
-      message: "Per indirizzi italiani, la provincia è obbligatoria"
-    });
-  }
-
   const receiverPhone =
     first(to.phone, order.billing_address?.phone, "+15555555555") || "+15555555555";
 
@@ -216,7 +206,7 @@ export async function POST(req: Request) {
       email: receiverEmail,
       phone: receiverPhone,
       country: to.country_code,
-      province: to.province_code || "",
+      province: to.province_code || "XX",  // Fallback per paesi senza provincia
       city: to.city,
       postcode: to.zip,
       street: to.address1,
