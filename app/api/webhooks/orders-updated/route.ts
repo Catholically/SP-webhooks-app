@@ -46,6 +46,8 @@ type ShopifyOrder = {
   id: number;
   name: string;
   tags?: string;
+  email?: string;
+  contact_email?: string;
   total_weight?: number; // grams
   line_items?: Array<{ title?: string }>;
   shipping_address?: {
@@ -60,6 +62,9 @@ type ShopifyOrder = {
     address1?: string;
   };
   billing_address?: { phone?: string };
+  customer?: {
+    email?: string;
+  };
 };
 
 const json = (status: number, obj: unknown) =>
@@ -124,6 +129,9 @@ export async function POST(req: Request) {
   const receiverPhone =
     first(to.phone, order.billing_address?.phone, "+0000000000") || "+0000000000";
 
+  const receiverEmail =
+    first(order.email, order.contact_email, order.customer?.email, SENDER.email) || SENDER.email;
+
   const weightKg =
     order.total_weight && order.total_weight > 0
       ? Math.max(0.01, order.total_weight / 1000)
@@ -143,7 +151,7 @@ export async function POST(req: Request) {
     },
     receiver: {
       name: first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer",
-      email: "", // optional
+      email: receiverEmail,
       phone: receiverPhone,
       country: to.country_code,
       province: to.province_code || "",
