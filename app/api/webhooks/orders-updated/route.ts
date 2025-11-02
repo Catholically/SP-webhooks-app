@@ -70,6 +70,54 @@ type ShopifyOrder = {
 const json = (status: number, obj: unknown) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 
+// Mappa CAP -> Provincia per Italia
+function getItalianProvinceFromCAP(cap: string): string | null {
+  if (!cap) return null;
+
+  const prefix = cap.substring(0, 2);
+  const capNum = parseInt(prefix, 10);
+
+  // Mappa range CAP -> Provincia (principali città/regioni)
+  const capMap: { [key: string]: string } = {
+    // Lazio
+    "00": "RM", "01": "VT", "02": "RI", "03": "FR", "04": "LT",
+    // Lombardia
+    "20": "MI", "21": "VA", "22": "CO", "23": "LC", "24": "BG", "25": "BS", "26": "CR", "27": "PV", "28": "NO",
+    // Piemonte
+    "10": "TO", "12": "CN", "13": "VC", "14": "AT", "15": "AL", "28": "NO",
+    // Liguria
+    "16": "GE", "17": "SV", "18": "IM", "19": "SP",
+    // Veneto
+    "30": "VE", "31": "TV", "32": "BL", "33": "UD", "34": "TS", "35": "PD", "36": "VI", "37": "VR", "38": "TN", "39": "BZ",
+    // Emilia-Romagna
+    "40": "BO", "41": "MO", "42": "RE", "43": "PR", "44": "FE", "45": "RO", "47": "RN", "48": "RA",
+    // Toscana
+    "50": "FI", "51": "PT", "52": "AR", "53": "SI", "54": "MS", "55": "LU", "56": "PI", "57": "LI", "58": "GR",
+    // Marche
+    "60": "AN", "61": "PU", "62": "MC", "63": "AP",
+    // Umbria
+    "05": "PG", "06": "PG",
+    // Abruzzo
+    "64": "TE", "65": "PE", "66": "CH", "67": "AQ",
+    // Molise
+    "86": "CB", "86": "IS",
+    // Campania
+    "80": "NA", "81": "CE", "82": "BN", "83": "AV", "84": "SA",
+    // Puglia
+    "70": "BA", "71": "FG", "72": "BR", "73": "LE", "74": "TA", "76": "BT",
+    // Basilicata
+    "75": "MT", "85": "PZ",
+    // Calabria
+    "87": "CS", "88": "CZ", "89": "RC", "88": "KR", "89": "VV",
+    // Sicilia
+    "90": "PA", "91": "TP", "92": "AG", "93": "CL", "94": "RG", "95": "CT", "96": "SR", "97": "EN", "98": "ME",
+    // Sardegna
+    "07": "SS", "08": "CA", "09": "CA",
+  };
+
+  return capMap[prefix] || null;
+}
+
 // Shopify API helper
 async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAdd: string[]) {
   const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
@@ -184,6 +232,20 @@ export async function POST(req: Request) {
   const receiverEmail =
     first(order.email, order.contact_email, order.customer?.email, SENDER.email) || SENDER.email;
 
+  // Determina la provincia: usa quella fornita o prova a inferirla dal CAP per Italia
+  let receiverProvince = to.province_code || "";
+  if (!receiverProvince && to.country_code === "IT" && to.zip) {
+    const inferredProvince = getItalianProvinceFromCAP(to.zip);
+    if (inferredProvince) {
+      receiverProvince = inferredProvince;
+      console.log(`Inferred province ${inferredProvince} from CAP ${to.zip}`);
+    }
+  }
+  // Fallback finale a "XX" se ancora mancante
+  if (!receiverProvince) {
+    receiverProvince = "XX";
+  }
+
   const weightKg =
     order.total_weight && order.total_weight > 0
       ? Math.max(0.01, order.total_weight / 1000)
@@ -206,7 +268,7 @@ export async function POST(req: Request) {
       email: receiverEmail,
       phone: receiverPhone,
       country: to.country_code,
-      province: to.province_code || "XX",  // Fallback per paesi senza provincia
+      province: receiverProvince,
       city: to.city,
       postcode: to.zip,
       street: to.address1,
