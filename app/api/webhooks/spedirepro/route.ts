@@ -50,13 +50,21 @@ async function findOrderIdByName(nameRaw: string): Promise<string | null> {
 }
 
 async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
-  const entries = Object.entries(kv).map(([key, value]) => ({
-    ownerId: orderGid,
-    namespace: "spedirepro",
-    key,
-    type: "single_line_text_field",
-    value,
-  }));
+  const entries = Object.entries(kv).map(([key, value]) => {
+    // Determina il tipo corretto in base al campo
+    let type = "single_line_text_field";
+    if (key === "ldv_url" || key === "label_url" || key === "tracking_url") {
+      type = "url";
+    }
+
+    return {
+      ownerId: orderGid,
+      namespace: "spedirepro",
+      key,
+      type,
+      value,
+    };
+  });
 
   console.log("Setting metafields:", entries);
 
