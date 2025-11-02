@@ -129,7 +129,8 @@ export async function POST(req: Request) {
   const tracking = body?.tracking || "";
   const trackingUrl = body?.tracking_url || body?.label?.link || "";
   const labelUrl = body?.label?.link || "";
-  const courier = body?.courier || body?.courier_group || "UPS";
+  const courier = body?.courier || body?.courier_group || "UPS"; // Nome completo per metafields
+  const courierGroup = body?.courier_group || body?.courier?.split(" ")[0] || "UPS"; // Nome standard per Shopify
 
   console.log("Extracted values:", {
     merchantRef,
@@ -137,6 +138,7 @@ export async function POST(req: Request) {
     trackingUrl,
     labelUrl,
     courier,
+    courierGroup,
     rawCourier: body?.courier,
     rawCourierGroup: body?.courier_group
   });
@@ -158,15 +160,17 @@ export async function POST(req: Request) {
     tracking_url: trackingUrl,
     label_url: labelUrl,
     ldv_url: labelUrl,  // Aggiunto per compatibilità
-    courier,
+    courier,  // Nome completo (es: "UPS STANDARD - PROMO")
+    courier_group: courierGroup,  // Nome standard (es: "UPS")
   });
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
   // Auto-fulfill the order with tracking information
+  // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")
   const foId = await firstFO(orderGid);
   if (foId) {
-    await fulfill(foId, tracking, trackingUrl, courier);
+    await fulfill(foId, tracking, trackingUrl, courierGroup);
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
