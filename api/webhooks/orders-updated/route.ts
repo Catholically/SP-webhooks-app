@@ -1,51 +1,82 @@
-// Runtime: Edge
 export const runtime = "edge";
 
-/**
- * Scopo: su ordine creato/aggiornato, se non già inviato a SpedirePro, crea la label.
- *
- * Triggera questo endpoint dal tuo sistema (Shopify Webhook "orders/create" + "orders/updated")
- * o da Flow/Mechanic.
- *
- * ENV richieste:
- * - SPRO_API_KEY
- * - SPRO_API_BASE           default "https://www.spedirepro.com/public-api/v1"
- * - SENDER_NAME,SENDER_EMAIL,SENDER_PHONE
- * - SENDER_COUNTRY,SENDER_PROVINCE,SENDER_CITY,SENDER_POSTCODE,SENDER_STREET
- * - DEFAULT_PARCEL_WEIGHT_G (default "50")
- * - DEFAULT_PARCEL_W_CM, DEFAULT_PARCEL_H_CM, DEFAULT_PARCEL_D_CM  (default 10,2,15)
- */
+// ---- utils env compat ----
+const first = (...vals: (string | undefined | null)[]) =>
+  vals.find(v => v !== undefined && v !== null && String(v).trim() !== "")?.toString().trim();
 
-const ok = (o: unknown) =>
-  new Response(JSON.stringify(o), { status: 200, headers: { "content-type": "application/json" } });
-const bad = (s: number, m: string) =>
-  new Response(JSON.stringify({ ok: false, error: m }), { status: s, headers: { "content-type": "application/json" } });
+const env = (name: string, def?: string) =>
+  first(process.env[name], def);
 
-function env(key: string, def?: string) {
-  const v = process.env[key];
-  return v == null || v === "" ? def : v;
+// Legge chiave API SPRO (supporta entrambi i nomi)
+const SPRO_API_KEY = first(env("SPRO_API_KEY"), env("SPRO_API_TOKEN"));
+// Base API SPRO
+const SPRO_API_BASE = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
+
+// Gating opzionale su tag
+const SPRO_TRIGGER_TAG = env("SPRO_TRIGGER_TAG"); // se vuoto, nessun gate
+
+// Mittente: supporto a nomi vecchi e nuovi
+const SENDER = {
+  name: env("SENDER_NAME"),
+  email: env("SENDER_EMAIL"),
+  phone: env("SENDER_PHONE"),
+  country: env("SENDER_COUNTRY"),
+  province: first(env("SENDER_PROVINCE"), env("SENDER_PROV")),
+  city: env("SENDER_CITY"),
+  postcode: first(env("SENDER_POSTCODE"), env("SENDER_ZIP")),
+  street: first(env("SENDER_STREET"), env("SENDER_ADDR1")),
+};
+
+// Dimensioni/peso: supporto a DEFAULT_DIM_CM ("12x3x18") o singoli campi
+function parseDims() {
+  const dimStr = env("DEFAULT_DIM_CM"); // es. "12x3x18"
+  let w = Number(env("DEFAULT_PARCEL_W_CM", "12"));
+  let h = Number(env("DEFAULT_PARCEL_H_CM", "3"));
+  let d = Number(env("DEFAULT_PARCEL_D_CM", "18"));
+  if (dimStr) {
+    const m = dimStr.toLowerCase().replace(/\s/g, "").match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/);
+    if (m) { w = Number(m[1]); h = Number(m[2]); d = Number(m[3]); }
+  }
+  return { w, h, d };
 }
+const { w: DEF_W, h: DEF_H, d: DEF_D } = parseDims();
+const DEF_WEIGHT_KG = Number(first(env("DEFAULT_WEIGHT_KG"), "0.05")); // se non c'è total_weight
 
+// Courier: se definito lo usiamo, altrimenti courier_fallback=true
+const DEFAULT_CARRIER_NAME = env("DEFAULT_CARRIER_NAME");
+
+// ---- tipi minimi ordine ----
 type ShopifyOrder = {
   id: number;
-  name: string; // es. "#35583..."
+  name: string; // es "#35583..."
   tags?: string;
+  total_weight?: number; // grams
   shipping_address?: {
     name?: string;
     first_name?: string;
     last_name?: string;
     phone?: string;
     country_code?: string; // "US"
-    province_code?: string; // "CA"
+    province_code?: string; // "WA"
     city?: string;
     zip?: string;
     address1?: string;
   };
-  total_weight?: number; // grams
-  line_items?: Array<{ title: string }>;
+  billing_address?: {
+    phone?: string;
+  };
+  line_items?: Array<{ title?: string }>;
 };
 
+const ok = (o: unknown) =>
+  new Response(JSON.stringify(o), { status: 200, headers: { "content-type": "application/json" } });
+const bad = (s: number, m: string, extra?: any) =>
+  new Response(JSON.stringify({ ok: false, error: m, ...(extra || {}) }), {
+    status: s, headers: { "content-type": "application/json" },
+  });
+
 export async function POST(req: Request) {
+  // parse payload (può arrivare come {order:{...}} o direttamente {...})
   let order: ShopifyOrder | null = null;
   try {
     const payload = await req.json();
@@ -53,64 +84,101 @@ export async function POST(req: Request) {
   } catch {
     return bad(400, "bad json");
   }
-  if (!order || !order.name) return ok({ ok: true, skipped: "no order" });
 
-  // idempotenza semplice: tag "SPRO-SENT"
-  if ((order.tags || "").toLowerCase().includes("spro-sent")) {
-    return ok({ ok: true, skipped: "already sent" });
+  if (!order?.name) {
+    return ok({ ok: true, skipped: "no order name" });
+  }
+
+  // opzionale: gating su tag
+  if (SPRO_TRIGGER_TAG) {
+    const tags = (order.tags || "").toLowerCase();
+    if (!tags.split(",").map(s => s.trim()).includes(SPRO_TRIGGER_TAG.toLowerCase())) {
+      return ok({ ok: true, skipped: true, reason: `tag-missing-${SPRO_TRIGGER_TAG}`, order: order.name });
+    }
+  }
+
+  // verifica mittente completo
+  const missingSender = Object.entries(SENDER)
+    .filter(([_, v]) => !v)
+    .map(([k]) => k);
+  if (missingSender.length) {
+    return bad(500, "sender env incomplete", { missing: missingSender });
   }
 
   const to = order.shipping_address;
   if (!to?.country_code || !to?.address1 || !to?.zip || !to?.city) {
-    return ok({ ok: true, skipped: "missing shipping address" });
+    return ok({ ok: true, skipped: "missing shipping address fields" });
   }
 
-  // pacco: da peso ordine o da default
-  const grams = order.total_weight || Number(env("DEFAULT_PARCEL_WEIGHT_G", "50"));
-  const weightKg = Math.max(0.01, grams / 1000);
-  const w = Number(env("DEFAULT_PARCEL_W_CM", "10"));
-  const h = Number(env("DEFAULT_PARCEL_H_CM", "2"));
-  const d = Number(env("DEFAULT_PARCEL_D_CM", "15"));
+  // phone: se manca in shipping, prova da billing, altrimenti placeholder
+  const receiverPhone = first(to.phone, order.billing_address?.phone, "+0000000000");
 
-  const apiBase = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
-  const token = env("SPRO_API_KEY")!;
-  const body = {
-    merchant_reference: order.name, // <- fondamentale per il match nel webhook
+  // peso: se c'è total_weight (g) -> kg, altrimenti default kg
+  const weightKg = order.total_weight && order.total_weight > 0
+    ? Math.max(0.01, order.total_weight / 1000)
+    : DEF_WEIGHT_KG;
+
+  // pacco
+  const pkg = { weight: weightKg, width: DEF_W, height: DEF_H, depth: DEF_D };
+
+  // corpo per SPRO
+  const body: any = {
+    merchant_reference: order.name, // importantissimo per match al ritorno
     sender: {
-      name: env("SENDER_NAME")!,
-      email: env("SENDER_EMAIL")!,
-      phone: env("SENDER_PHONE")!,
-      country: env("SENDER_COUNTRY")!,
-      province: env("SENDER_PROVINCE")!,
-      city: env("SENDER_CITY")!,
-      postcode: env("SENDER_POSTCODE")!,
-      street: env("SENDER_STREET")!,
+      name: SENDER.name,
+      email: SENDER.email,
+      phone: SENDER.phone,
+      country: SENDER.country,
+      province: SENDER.province,
+      city: SENDER.city,
+      postcode: SENDER.postcode,
+      street: SENDER.street,
     },
     receiver: {
-      name: to.name || `${to.first_name || ""} ${to.last_name || ""}`.trim(),
+      name: first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer",
       email: "", // opzionale
-      phone: to.phone || "",
+      phone: receiverPhone,
       country: to.country_code,
       province: to.province_code || "",
       city: to.city,
       postcode: to.zip,
       street: to.address1,
     },
-    packages: [{ weight: weightKg, width: w, height: h, depth: d }],
-    courier_fallback: true,
+    packages: [pkg],
     content: {
       description: order.line_items?.[0]?.title || "Order items",
       amount: 10.0,
     },
   };
 
-  const r = await fetch(`${apiBase}/create-label`, {
+  if (DEFAULT_CARRIER_NAME) {
+    body.courier = DEFAULT_CARRIER_NAME;
+  } else {
+    body.courier_fallback = true;
+  }
+
+  if (!SPRO_API_KEY) {
+    return bad(500, "missing SPRO_API_KEY/SPRO_API_TOKEN");
+  }
+
+  // chiamata a SpedirePro
+  const r = await fetch(`${SPRO_API_BASE}/create-label`, {
     method: "POST",
-    headers: { "X-Api-Key": token, "Content-Type": "application/json" },
+    headers: {
+      "X-Api-Key": SPRO_API_KEY,
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
     body: JSON.stringify(body),
   });
 
-  const out = await r.text();
-  const okHTTP = r.ok;
-  return ok({ ok: okHTTP, create_label_response: out });
+  const text = await r.text();
+  if (!r.ok) {
+    let parsed: any;
+    try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
+    console.error("orders-updated: SpedirePro error", { status: r.status, url: `${SPRO_API_BASE}/create-label`, body: parsed });
+    return ok({ ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
+  }
+
+  return ok({ ok: true, create_label_response: text });
 }
