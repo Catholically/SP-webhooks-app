@@ -5,8 +5,9 @@ This guide will help you configure the SpedirePro integration for automatic labe
 ## Overview
 
 **Flow:**
-1. Shopify webhook → `/api/webhooks/orders-updated` → Creates label via SpedirePro API
-2. SpedirePro webhook → `/api/webhooks/spedirepro` → Updates Shopify order with tracking & label URL + **Auto-fulfills order**
+1. You add `SPRO-CREATE` tag to a Shopify order
+2. Shopify webhook → `/api/webhooks/orders-updated` → Creates label via SpedirePro API
+3. SpedirePro webhook → `/api/webhooks/spedirepro` → Updates Shopify order with tracking & label URL + **Auto-fulfills order**
 
 ---
 
@@ -20,9 +21,6 @@ SPRO_API_KEY=your_spedirepro_api_key_here
 
 # SpedirePro API Base URL (optional, defaults to production)
 SPRO_API_BASE=https://www.spedirepro.com/public-api/v1
-
-# Optional: Only process orders with this tag
-SPRO_TRIGGER_TAG=ship-with-spedirepro
 
 # Optional: Specify default carrier (otherwise uses auto-selection)
 DEFAULT_CARRIER_NAME=UPS
@@ -102,10 +100,12 @@ openssl rand -hex 32
 2. Scroll to **Webhooks**
 3. Click **Create webhook**
 4. Configure:
-   - **Event:** `Order creation` or `Order updated`
+   - **Event:** `Order updated` (recommended to capture tag changes)
    - **Format:** `JSON`
    - **URL:** `https://webhooks.catholically.com/api/webhooks/orders-updated`
    - **API Version:** Latest
+
+**Note:** Use "Order updated" event to trigger when you add the `SPRO-CREATE` tag.
 
 ### Step 2: Test the Integration
 
@@ -170,16 +170,22 @@ The integration stores data in Shopify order metafields under namespace `spedire
 
 ---
 
-## 6. Optional: Tag-Based Filtering
+## 6. Manual Label Creation with Tag
 
-If you set `SPRO_TRIGGER_TAG`, only orders with that tag will trigger label creation.
+**Label creation is triggered manually by adding the `SPRO-CREATE` tag to an order.**
 
-**To use:**
-1. Set `SPRO_TRIGGER_TAG=ship-with-spedirepro` in Vercel
-2. In Shopify, add tag `ship-with-spedirepro` to orders you want to ship
-3. Only tagged orders will create labels automatically
+### How to use:
 
-**To disable filtering:** Simply don't set the `SPRO_TRIGGER_TAG` variable (all orders will be processed).
+1. **In Shopify Admin**, open an order you want to ship
+2. **Add the tag** `SPRO-CREATE` to the order
+3. **Save the order** - this triggers the webhook
+4. The system will automatically:
+   - ✅ Create a shipping label via SpedirePro
+   - ✅ Wait for tracking from SpedirePro
+   - ✅ Store tracking & label URL in order metafields
+   - ✅ Auto-fulfill the order
+
+**Important:** Orders without the `SPRO-CREATE` tag will be skipped (no label created).
 
 ---
 
@@ -187,12 +193,13 @@ If you set `SPRO_TRIGGER_TAG`, only orders with that tag will trigger label crea
 
 ### Test 1: Create a Label
 
-1. Create a test order in Shopify with:
-   - Complete shipping address
-   - If using tags: Add your trigger tag
-2. Save the order
-3. Check Vercel logs for the API call
-4. Check SpedirePro dashboard for the label
+1. Create a test order in Shopify with complete shipping address
+2. **Add the tag `SPRO-CREATE`** to the order
+3. Save the order
+4. Check Vercel logs for the API call
+5. Check SpedirePro dashboard for the label
+
+**Without the `SPRO-CREATE` tag, no label will be created (this is by design).**
 
 ### Test 2: Webhook Response
 

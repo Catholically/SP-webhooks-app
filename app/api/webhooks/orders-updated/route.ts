@@ -12,7 +12,7 @@ const env = (k: string, def?: string) => {
 // SpedirePro envs (support legacy names)
 const SPRO_API_KEY = first(env("SPRO_API_KEY"), env("SPRO_API_TOKEN"));
 const SPRO_API_BASE = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
-const SPRO_TRIGGER_TAG = env("SPRO_TRIGGER_TAG"); // optional tag gate
+const SPRO_CREATE_TAG = "SPRO-CREATE"; // Required tag to trigger label creation
 
 // Sender envs (support both old/new names)
 const SENDER = {
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
       debug: true,
       hasApiKey: !!SPRO_API_KEY,
       SPRO_API_BASE,
-      triggerTag: SPRO_TRIGGER_TAG || "(none)",
+      requiredTag: SPRO_CREATE_TAG,
       SENDER,
       orderName: order?.name || "(none)",
     });
@@ -94,15 +94,20 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "no order name" });
   }
 
-  // Optional tag gate
-  if (SPRO_TRIGGER_TAG) {
-    const hasTag = (order.tags || "")
-      .split(",")
-      .map(s => s.trim().toLowerCase())
-      .includes(SPRO_TRIGGER_TAG.toLowerCase());
-    if (!hasTag) {
-      return json(200, { ok: true, skipped: true, reason: `tag-missing-${SPRO_TRIGGER_TAG}`, order: order.name });
-    }
+  // Require SPRO-CREATE tag to trigger label creation
+  const hasCreateTag = (order.tags || "")
+    .split(",")
+    .map(s => s.trim().toUpperCase())
+    .includes(SPRO_CREATE_TAG);
+
+  if (!hasCreateTag) {
+    return json(200, {
+      ok: true,
+      skipped: true,
+      reason: "tag-missing-SPRO-CREATE",
+      order: order.name,
+      message: "Add 'SPRO-CREATE' tag to order to trigger label creation"
+    });
   }
 
   // Validate sender envs
