@@ -282,6 +282,10 @@ export async function POST(req: Request) {
       ? Math.max(0.01, order.total_weight / 1000)
       : DEF_WEIGHT_KG;
 
+  // SpedirePro ha un limite di 27 caratteri per receiver.name
+  const receiverName = (first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
+    .substring(0, 27);
+
   const sproBody: any = {
     merchant_reference: order.name, // critical to reconcile on webhook
     sender: {
@@ -295,7 +299,7 @@ export async function POST(req: Request) {
       street: SENDER.street,
     },
     receiver: {
-      name: first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer",
+      name: receiverName,
       email: receiverEmail,
       phone: receiverPhone,
       country: to.country_code,
