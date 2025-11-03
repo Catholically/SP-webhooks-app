@@ -215,29 +215,40 @@ export async function POST(req: Request) {
     .split(",")
     .map(s => s.trim().toUpperCase());
 
+  console.log("Orders-updated webhook - Order:", order.name, "Tags:", tags);
+
   let senderCode: string | null = null;
   let usedTag: string | null = null;
 
   for (const tag of tags) {
     if (tag.endsWith("-CREATE")) {
       const code = tag.replace("-CREATE", "");
+      console.log(`Found CREATE tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
       if (SENDERS[code as keyof typeof SENDERS]) {
         senderCode = code;
         usedTag = tag;
+        console.log(`Matched sender: ${senderCode}`);
         break;
+      } else {
+        console.log(`No sender found for code: ${code}`);
       }
     }
   }
 
   if (!senderCode || !usedTag) {
+    console.log("No valid CREATE tag found, skipping order");
     return json(200, {
       ok: true,
       skipped: true,
       reason: "no-valid-create-tag",
       order: order.name,
+      tags: tags,
+      availableTags: Object.keys(SENDERS).map(k => `${k}-CREATE`),
       message: `Add one of these tags to trigger label creation: ${Object.keys(SENDERS).map(k => `${k}-CREATE`).join(", ")}`
     });
   }
+
+  console.log(`Processing order ${order.name} with sender ${senderCode}`);
 
   const SENDER = SENDERS[senderCode as keyof typeof SENDERS];
 
