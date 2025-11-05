@@ -135,8 +135,21 @@ async function fulfill(foId: string, tracking: string, trackingUrl?: string, com
   console.log("[DEBUG] Fulfill mutation response:", JSON.stringify(result, null, 2));
 
   if (result.data?.fulfillmentCreateV2?.userErrors?.length > 0) {
-    console.error("[DEBUG] ❌ Fulfillment userErrors:", result.data.fulfillmentCreateV2.userErrors);
-    throw new Error(`Fulfillment failed: ${JSON.stringify(result.data.fulfillmentCreateV2.userErrors)}`);
+    const errors = result.data.fulfillmentCreateV2.userErrors;
+
+    // Check if order is already fulfilled (closed status)
+    const isAlreadyFulfilled = errors.some((err: any) =>
+      err.message?.includes('unfulfillable status') ||
+      err.message?.includes('closed')
+    );
+
+    if (isAlreadyFulfilled) {
+      console.log("[DEBUG] ⚠️  Order already fulfilled, skipping:", errors[0].message);
+      return; // Gracefully skip if already fulfilled
+    }
+
+    console.error("[DEBUG] ❌ Fulfillment userErrors:", errors);
+    throw new Error(`Fulfillment failed: ${JSON.stringify(errors)}`);
   }
 
   if (result.data?.fulfillmentCreateV2?.fulfillment?.id) {
