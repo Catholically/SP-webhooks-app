@@ -23,7 +23,7 @@ export async function uploadToGoogleDrive(
   const auth = new google.auth.JWT({
     email: serviceAccountEmail,
     key: privateKey.replace(/\\n/g, '\n'), // Handle escaped newlines
-    scopes: ['https://www.googleapis.com/auth/drive.file'],
+    scopes: ['https://www.googleapis.com/auth/drive'],
   });
 
   const drive = google.drive({ version: 'v3', auth });
@@ -46,6 +46,7 @@ export async function uploadToGoogleDrive(
     requestBody: fileMetadata,
     media: media,
     fields: 'id, webViewLink, webContentLink',
+    supportsAllDrives: true,
   });
 
   if (!file.data.id) {
@@ -59,6 +60,7 @@ export async function uploadToGoogleDrive(
       role: 'reader',
       type: 'anyone',
     },
+    supportsAllDrives: true,
   });
 
   // Return the view link
@@ -86,7 +88,7 @@ export async function deleteFromGoogleDrive(fileName: string): Promise<void> {
   const auth = new google.auth.JWT({
     email: serviceAccountEmail,
     key: privateKey.replace(/\\n/g, '\n'),
-    scopes: ['https://www.googleapis.com/auth/drive.file'],
+    scopes: ['https://www.googleapis.com/auth/drive'],
   });
 
   const drive = google.drive({ version: 'v3', auth });
@@ -95,6 +97,8 @@ export async function deleteFromGoogleDrive(fileName: string): Promise<void> {
   const response = await drive.files.list({
     q: `name='${fileName}.pdf' and '${folderId}' in parents and trashed=false`,
     fields: 'files(id, name)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   });
 
   const files = response.data.files;
@@ -106,7 +110,10 @@ export async function deleteFromGoogleDrive(fileName: string): Promise<void> {
   // Delete all matching files
   for (const file of files) {
     if (file.id) {
-      await drive.files.delete({ fileId: file.id });
+      await drive.files.delete({
+        fileId: file.id,
+        supportsAllDrives: true,
+      });
       console.log(`[Google Drive] Deleted ${fileName}.pdf (${file.id})`);
     }
   }
