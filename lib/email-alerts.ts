@@ -1,7 +1,5 @@
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 interface CustomsErrorAlert {
   orderName: string;
   orderNumber: string;
@@ -10,6 +8,18 @@ interface CustomsErrorAlert {
   errorDetails: string;
   missingData?: string[];
   timestamp: Date;
+}
+
+/**
+ * Get Resend client (lazy initialization to avoid build-time errors)
+ */
+function getResendClient(): Resend | null {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    console.error('[Email Alert] RESEND_API_KEY not configured');
+    return null;
+  }
+  return new Resend(apiKey);
 }
 
 /**
@@ -24,8 +34,8 @@ export async function sendCustomsErrorAlert(error: CustomsErrorAlert): Promise<v
     return;
   }
 
-  if (!process.env.RESEND_API_KEY) {
-    console.error('[Email Alert] RESEND_API_KEY not configured');
+  const resend = getResendClient();
+  if (!resend) {
     return;
   }
 
@@ -119,7 +129,12 @@ export async function sendCustomsSuccessNotification(
 ): Promise<void> {
   const alertEmail = process.env.ALERT_EMAIL;
 
-  if (!alertEmail || !process.env.RESEND_API_KEY) {
+  if (!alertEmail) {
+    return; // Silently skip if not configured
+  }
+
+  const resend = getResendClient();
+  if (!resend) {
     return; // Silently skip if not configured
   }
 
