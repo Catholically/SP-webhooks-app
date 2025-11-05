@@ -175,16 +175,23 @@ export async function POST(req: Request) {
   }
   const orderGid = `gid://shopify/Order/${orderIdNum}`;
 
-  await metafieldsSet(orderGid, {
+  // Build metafields object, excluding empty URLs (Shopify doesn't accept empty URL metafields)
+  const metafields: Record<string, string> = {
     reference: body?.reference || "",
     order_ref: body?.order || "",
     tracking,
-    tracking_url: trackingUrl,
-    label_url: labelUrl,
-    ldv_url: labelUrl,  // Aggiunto per compatibilità
     courier,  // Nome completo (es: "UPS STANDARD - PROMO")
     courier_group: courierGroup,  // Nome standard (es: "UPS")
-  });
+  };
+
+  // Only add URL metafields if they have values
+  if (trackingUrl) metafields.tracking_url = trackingUrl;
+  if (labelUrl) {
+    metafields.label_url = labelUrl;
+    metafields.ldv_url = labelUrl;  // Aggiunto per compatibilità
+  }
+
+  await metafieldsSet(orderGid, metafields);
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
