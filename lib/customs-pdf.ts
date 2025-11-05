@@ -66,14 +66,18 @@ export async function generateCustomsDeclarationPDF(
   let y = height - margin - 20;
 
   // Helper function to draw signature at a position
-  const drawSignature = (currentPage: any, atY: number, signatureWidth = 150): number => {
+  const drawSignature = (currentPage: any, atY: number, signatureWidth = 150, alignLeft = false): number => {
     if (!signatureImage) return 0;
 
     const signatureAspectRatio = signatureImage.width / signatureImage.height;
     const signatureHeight = signatureWidth / signatureAspectRatio;
 
+    const xPosition = alignLeft
+      ? margin  // Left aligned
+      : width - margin - signatureWidth;  // Right aligned
+
     currentPage.drawImage(signatureImage, {
-      x: width - margin - signatureWidth, // Right aligned
+      x: xPosition,
       y: atY - signatureHeight,
       width: signatureWidth,
       height: signatureHeight,
@@ -212,8 +216,8 @@ export async function generateCustomsDeclarationPDF(
     color: rgb(0, 0, 0),
   });
 
-  // Table rows
-  let rowY = tableTop - 20;
+  // Table rows - add more spacing before first row
+  let rowY = tableTop - 25;
 
   for (const item of data.lineItems) {
     // Check if we need a new page
@@ -429,6 +433,16 @@ export async function generateCustomsDeclarationPDF(
   });
   rowY -= 10;
 
+  // Customer phone
+  page.drawText(`Tel. ${data.receiverPhone}`, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+  rowY -= 10;
+
   // Empty line
   rowY -= 10;
 
@@ -488,9 +502,9 @@ export async function generateCustomsDeclarationPDF(
   // Leave 5 lines (50 pixels) for physical stamp
   rowY -= 50;
 
-  // Signature #2 after first "Data" - smaller size
-  const sig2Height = drawSignature(page, rowY, 100);
-  rowY -= Math.max(20, sig2Height + 10);
+  // Signature #2 after first "Data" - smaller size, left aligned
+  const sig2Height = drawSignature(page, rowY, 100, true);
+  rowY -= Math.max(15, sig2Height + 5);
 
   // Final paragraph
   const finalParagraph = 'Con la presente, inoltre, conferiamo mandato alla societa di richiedere alla Dogana di competenza, qualora previsto dagli accordi doganali vigenti, il rilascio del certificato di circolazione delle merci EUR.1 (ovvero EUR-MED) / A.TR. e a sottoscriverlo per nostro conto. Si dichiara che le merci riferite alla presente fattura sono prodotte in Italia e/o nella Comunita e rispondono alle norme di origine preferenziale. Ci si impegna, inoltre, a fornire, in qualsiasi momento, tutte le informazioni e i documenti necessari ai fini del rilascio del certificato richiesto.';
@@ -526,8 +540,8 @@ export async function generateCustomsDeclarationPDF(
   // Leave 5 lines (50 pixels) for physical stamp
   rowY -= 50;
 
-  // Signature #3 after second "Data" - smaller size
-  drawSignature(page, rowY, 100);
+  // Signature #3 after second "Data" - smaller size, left aligned
+  drawSignature(page, rowY, 100, true);
 
   // Serialize the PDF to bytes
   const pdfBytes = await pdfDoc.save();
@@ -555,7 +569,7 @@ export async function createCustomsDeclarationFromOrder(
     companyName: 'RBK S.r.l.',
     vatId: 'IT16281261004',
     companyAddress: 'Piazzale Clodio 22, Rome, ITALY',
-    companyEmail: 'info@catholically.com',
+    companyEmail: 'robykz@gmail.com',
     companyPhone: '(39) 327-925-4096',
     invoiceNumber: orderData.orderNumber,
     tracking: tracking,
