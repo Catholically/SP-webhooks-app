@@ -79,6 +79,46 @@ SPRO_WEBHOOK_TOKEN=your_random_secret_token_here
 openssl rand -hex 32
 ```
 
+### Customs Declarations (for Extra-EU Shipments)
+
+```bash
+# Google Drive Configuration
+GOOGLE_DRIVE_FOLDER_ID=your_google_drive_folder_id
+GOOGLE_SERVICE_ACCOUNT_EMAIL=your-service-account@project-id.iam.gserviceaccount.com
+GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
+# Email Alerts Configuration (using Resend)
+RESEND_API_KEY=re_your_resend_api_key
+ALERT_EMAIL=your-email@example.com
+```
+
+**How customs declarations work:**
+1. When a shipment is created and tracking is received
+2. The system automatically checks if destination is outside EU
+3. If yes, generates a customs declaration PDF with:
+   - Commercial invoice with item details, HS codes, values in USD
+   - Italian legal declaration (Dichiarazione di libera esportazione)
+4. Uploads PDF to SpedirePro and Google Drive
+5. Updates Shopify order metafield `custom.doganale` with Google Drive URL
+6. Sends email alert if there are errors or missing data
+
+**Required Shopify Product Metafields:**
+- `custom.harmonized_system_code` - HS code (e.g., "71179090")
+- `custom.cost` - Product cost in USD (metafield type: money)
+- `custom.customs_description` - Customs description (e.g., "Wooden Rosary")
+
+**Google Drive Setup:**
+1. Create a Google Cloud project
+2. Enable Google Drive API
+3. Create a Service Account and download JSON credentials
+4. Share your Google Drive folder with the service account email (as Editor)
+5. Extract `GOOGLE_DRIVE_FOLDER_ID` from the folder URL
+6. Set the environment variables above
+
+**Resend Email Setup:**
+1. Sign up at https://resend.com (free tier: 3000 emails/month)
+2. Verify your domain (or use onboarding@resend.dev for testing)
+3. Create an API key and set `RESEND_API_KEY`
 
 ---
 

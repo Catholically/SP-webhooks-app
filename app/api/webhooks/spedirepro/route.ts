@@ -1,4 +1,7 @@
-export const runtime = "edge";
+// Change runtime to nodejs to support pdfkit and other Node.js libraries
+export const runtime = "nodejs";
+
+import { handleCustomsDeclaration } from '@/lib/customs-handler';
 
 type SproWebhook = {
   update_type?: string;
@@ -190,6 +193,18 @@ export async function POST(req: Request) {
   const foId = await firstFO(orderGid);
   if (foId) {
     await fulfill(foId, tracking, trackingUrl, courierGroup);
+  }
+
+  // Process customs declaration (async, don't block webhook response)
+  // This will check if destination is extra-EU and generate customs docs if needed
+  const reference = body?.reference || "";
+  if (reference) {
+    // Run customs processing in the background
+    Promise.resolve().then(() =>
+      handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference)
+    ).catch(err => {
+      console.error('[Webhook] Error in background customs processing:', err);
+    });
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
