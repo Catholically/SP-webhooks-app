@@ -99,7 +99,7 @@ ALERT_EMAIL=your-email@example.com
    - Commercial invoice with item details, HS codes, values in USD
    - Italian legal declaration (Dichiarazione di libera esportazione)
 4. Uploads PDF to SpedirePro and Google Drive
-5. Updates Shopify order metafield `custom.doganale` with Google Drive URL
+5. Updates Shopify order metafield `custom.dichiarazione_doganale` with Google Drive URL
 6. Sends email alert if there are errors or missing data
 
 **Required Shopify Metafields:**

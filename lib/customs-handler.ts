@@ -156,7 +156,7 @@ async function updateCustomsMetafield(
       {
         ownerId: orderGid,
         namespace: 'custom',
-        key: 'doganale',
+        key: 'dichiarazione_doganale',
         type: 'url',
         value: driveUrl,
       },
