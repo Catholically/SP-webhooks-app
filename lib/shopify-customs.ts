@@ -73,6 +73,7 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
                 product {
                   id
                   title
+                  productType
                 }
               }
             }
@@ -109,6 +110,17 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
   const lineItems: CustomsLineItem[] = [];
   const missingData: string[] = [];
 
+  // List of keywords to identify service/insurance items (not physical goods)
+  const serviceKeywords = [
+    'insurance',
+    'protection',
+    'warranty',
+    'service',
+    'assurance',
+    'shipping protection',
+    'green shipping',
+  ];
+
   for (const edge of order.lineItems.edges || []) {
     const node = edge.node;
     const variant = node.variant;
@@ -117,6 +129,19 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
     if (!variant || !product) {
       missingData.push(`${node.title}: No product variant found`);
       continue;
+    }
+
+    // Skip service/insurance items - they don't need customs declarations
+    const title = (node.title || product.title || '').toLowerCase();
+    const productType = (product.productType || '').toLowerCase();
+
+    const isService = serviceKeywords.some(keyword =>
+      title.includes(keyword) || productType.includes(keyword)
+    );
+
+    if (isService) {
+      console.log(`[Customs] Skipping service item: ${node.title}`);
+      continue; // Skip this item, don't include in customs declaration
     }
 
     // Extract HS Code (from variant.global.harmonized_system_code)
@@ -161,6 +186,19 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
       weight: weightKg,
       origin: "ITALY",
     });
+  }
+
+  // If no physical goods found (only services), return empty customs data
+  if (lineItems.length === 0) {
+    console.log(`[Customs] No physical goods found in order ${order.name} (only services/insurance)`);
+    return {
+      orderName: order.name,
+      orderNumber: order.name.replace('#', ''),
+      lineItems: [],
+      totalValue: 0,
+      receiverEmail: order.email || "",
+      receiverPhone: order.phone || "",
+    };
   }
 
   if (missingData.length > 0) {

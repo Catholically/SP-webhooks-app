@@ -212,6 +212,12 @@ export async function handleCustomsDeclaration(
     console.log('[Customs] Fetching product customs data...');
     const orderData = await fetchOrderCustomsData(orderId);
 
+    // Check if there are any physical goods to declare
+    if (orderData.lineItems.length === 0) {
+      console.log('[Customs] No physical goods found in order (only services/insurance), skipping customs declaration');
+      return;
+    }
+
     // Step 4: Generate PDF
     console.log('[Customs] Generating customs declaration PDF...');
     const pdfBuffer = await createCustomsDeclarationFromOrder(
