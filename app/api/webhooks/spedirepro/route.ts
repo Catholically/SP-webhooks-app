@@ -201,9 +201,20 @@ export async function POST(req: Request) {
 
   // Auto-fulfill the order with tracking information
   // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")
+  console.log("[DEBUG] Looking for fulfillment order...");
   const foId = await firstFO(orderGid);
+  console.log("[DEBUG] Fulfillment Order ID found:", foId);
+
   if (foId) {
-    await fulfill(foId, tracking, trackingUrl, courierGroup);
+    console.log("[DEBUG] Starting fulfillment with tracking:", tracking);
+    try {
+      await fulfill(foId, tracking, trackingUrl, courierGroup);
+      console.log("[DEBUG] ✅ Fulfillment completed successfully");
+    } catch (err) {
+      console.error("[DEBUG] ❌ Fulfillment error:", err);
+    }
+  } else {
+    console.log("[DEBUG] ⚠️ No fulfillment order found - skipping fulfillment");
   }
 
   // Process customs declaration (await to ensure it completes)
