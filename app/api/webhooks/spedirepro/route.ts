@@ -1,4 +1,9 @@
-export const runtime = "edge";
+// Change runtime to nodejs to support pdfkit and other Node.js libraries
+export const runtime = "nodejs";
+
+import { handleCustomsDeclaration } from '@/lib/customs-handler';
+import { sendLabelEmail } from '@/lib/email-label';
+import { downloadAndUploadToGoogleDrive } from '@/lib/google-drive';
 
 type SproWebhook = {
   update_type?: string;
@@ -27,6 +32,7 @@ function adminBase() {
 
 async function shopifyFetch(path: string, init?: RequestInit) {
   const token = process.env.SHOPIFY_ADMIN_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || "";
+  console.log("[DEBUG] Shopify token exists:", !!token, "length:", token.length);
   return fetch(`${adminBase()}${path}`, {
     ...init,
     headers: {
@@ -49,7 +55,7 @@ async function findOrderIdByName(nameRaw: string): Promise<string | null> {
   return id ? String(id) : null;
 }
 
-async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
+async function metafieldsSet(orderGid: string, kv: Record<string, string>, reference?: string) {
   const entries = Object.entries(kv).map(([key, value]) => {
     // Determina il tipo corretto in base al campo
     let type = "single_line_text_field";
@@ -65,6 +71,17 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
       value,
     };
   });
+
+  // Add spro.reference metafield if reference is provided
+  if (reference) {
+    entries.push({
+      ownerId: orderGid,
+      namespace: "spro",
+      key: "reference",
+      type: "single_line_text_field",
+      value: reference,
+    });
+  }
 
   console.log("Setting metafields:", entries);
 
@@ -103,6 +120,22 @@ async function firstFO(orderGid: string): Promise<string | null> {
   return jsonData?.data?.order?.fulfillmentOrders?.nodes?.[0]?.id || null;
 }
 
+async function getOrderTags(orderGid: string): Promise<string[]> {
+  const q = `
+    query($id: ID!) {
+      order(id: $id) {
+        tags
+      }
+    }`;
+  const r = await shopifyFetch("/graphql.json", {
+    method: "POST",
+    body: JSON.stringify({ query: q, variables: { id: orderGid } }),
+  });
+  const jsonData = await r.json();
+  const tags = jsonData?.data?.order?.tags || [];
+  return Array.isArray(tags) ? tags : [];
+}
+
 async function fulfill(foId: string, tracking: string, trackingUrl?: string, company?: string) {
   const q = `
     mutation fulfill($fulfillmentOrderId: ID!, $trackingInfo: FulfillmentTrackingInput) {
@@ -123,7 +156,36 @@ async function fulfill(foId: string, tracking: string, trackingUrl?: string, com
       company: company || "UPS",
     },
   };
-  await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
+
+  console.log("[DEBUG] Fulfill mutation variables:", JSON.stringify(vars, null, 2));
+  const response = await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
+  const result = await response.json();
+
+  console.log("[DEBUG] Fulfill mutation response:", JSON.stringify(result, null, 2));
+
+  if (result.data?.fulfillmentCreateV2?.userErrors?.length > 0) {
+    const errors = result.data.fulfillmentCreateV2.userErrors;
+
+    // Check if order is already fulfilled (closed status)
+    const isAlreadyFulfilled = errors.some((err: any) =>
+      err.message?.includes('unfulfillable status') ||
+      err.message?.includes('closed')
+    );
+
+    if (isAlreadyFulfilled) {
+      console.log("[DEBUG] ⚠️  Order already fulfilled, skipping:", errors[0].message);
+      return; // Gracefully skip if already fulfilled
+    }
+
+    console.error("[DEBUG] ❌ Fulfillment userErrors:", errors);
+    throw new Error(`Fulfillment failed: ${JSON.stringify(errors)}`);
+  }
+
+  if (result.data?.fulfillmentCreateV2?.fulfillment?.id) {
+    console.log("[DEBUG] ✅ Fulfillment created successfully:", result.data.fulfillmentCreateV2.fulfillment.id);
+  } else {
+    console.error("[DEBUG] ❌ Unexpected fulfillment response (no fulfillment ID)");
+  }
 }
 
 export async function POST(req: Request) {
@@ -166,30 +228,96 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "missing merchant_reference or tracking" });
   }
 
+  console.log("[DEBUG] About to find order by name:", merchantRef);
+
   const orderIdNum = await findOrderIdByName(merchantRef);
+  console.log("[DEBUG] Order ID found:", orderIdNum);
   if (!orderIdNum) {
     return json(200, { ok: true, skipped: "order not found by name", merchant_reference: merchantRef });
   }
   const orderGid = `gid://shopify/Order/${orderIdNum}`;
 
-  await metafieldsSet(orderGid, {
+  // Build metafields object, excluding empty URLs (Shopify doesn't accept empty URL metafields)
+  const metafields: Record<string, string> = {
     reference: body?.reference || "",
     order_ref: body?.order || "",
     tracking,
-    tracking_url: trackingUrl,
-    label_url: labelUrl,
-    ldv_url: labelUrl,  // Aggiunto per compatibilità
     courier,  // Nome completo (es: "UPS STANDARD - PROMO")
     courier_group: courierGroup,  // Nome standard (es: "UPS")
-  });
+  };
+
+  // Only add tracking URL metafield if it has value
+  if (trackingUrl) metafields.tracking_url = trackingUrl;
+
+  // Download label from AWS and upload to Google Drive for permanent storage
+  let permanentLabelUrl = labelUrl; // Fallback to original URL
+  if (labelUrl) {
+    try {
+      console.log("[Label Storage] Downloading and uploading label to Google Drive...");
+      permanentLabelUrl = await downloadAndUploadToGoogleDrive(labelUrl, tracking, 'label');
+      console.log("[Label Storage] ✅ Label stored on Google Drive:", permanentLabelUrl);
+
+      // Update metafields with permanent Google Drive URL
+      metafields.label_url = permanentLabelUrl;
+      metafields.ldv_url = permanentLabelUrl;  // Aggiunto per compatibilità
+    } catch (err) {
+      console.error("[Label Storage] ❌ Failed to upload label to Google Drive:", err);
+      // Fallback to AWS URL
+      metafields.label_url = labelUrl;
+      metafields.ldv_url = labelUrl;
+    }
+  }
+
+  await metafieldsSet(orderGid, metafields, body?.reference);
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
+  // Check if order has MI-CREATE tag and send label email with PDF attachment
+  if (permanentLabelUrl) {
+    try {
+      const tags = await getOrderTags(orderGid);
+      console.log("[Label Email] Order tags:", tags);
+
+      if (tags.includes("MI-CREATE")) {
+        console.log("[Label Email] MI-CREATE tag found, sending label email with PDF attachment");
+        await sendLabelEmail(merchantRef, permanentLabelUrl);
+      } else {
+        console.log("[Label Email] No MI-CREATE tag, skipping label email");
+      }
+    } catch (err) {
+      console.error("[Label Email] Error checking tags or sending email:", err);
+      // Don't fail the webhook - just log the error
+    }
+  }
+
   // Auto-fulfill the order with tracking information
   // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")
+  console.log("[DEBUG] Looking for fulfillment order...");
   const foId = await firstFO(orderGid);
+  console.log("[DEBUG] Fulfillment Order ID found:", foId);
+
   if (foId) {
-    await fulfill(foId, tracking, trackingUrl, courierGroup);
+    console.log("[DEBUG] Starting fulfillment with tracking:", tracking);
+    try {
+      await fulfill(foId, tracking, trackingUrl, courierGroup);
+      console.log("[DEBUG] ✅ Fulfillment completed successfully");
+    } catch (err) {
+      console.error("[DEBUG] ❌ Fulfillment error:", err);
+    }
+  } else {
+    console.log("[DEBUG] ⚠️ No fulfillment order found - skipping fulfillment");
+  }
+
+  // Process customs declaration (await to ensure it completes)
+  // This will check if destination is extra-EU and generate customs docs if needed
+  const reference = body?.reference || "";
+  if (reference) {
+    try {
+      await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference);
+    } catch (err) {
+      console.error('[Webhook] Error in customs processing:', err);
+      // Don't fail the webhook - just log the error
+    }
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
