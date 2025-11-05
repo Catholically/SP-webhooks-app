@@ -195,16 +195,16 @@ export async function POST(req: Request) {
     await fulfill(foId, tracking, trackingUrl, courierGroup);
   }
 
-  // Process customs declaration (async, don't block webhook response)
+  // Process customs declaration (await to ensure it completes)
   // This will check if destination is extra-EU and generate customs docs if needed
   const reference = body?.reference || "";
   if (reference) {
-    // Run customs processing in the background
-    Promise.resolve().then(() =>
-      handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference)
-    ).catch(err => {
-      console.error('[Webhook] Error in background customs processing:', err);
-    });
+    try {
+      await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference);
+    } catch (err) {
+      console.error('[Webhook] Error in customs processing:', err);
+      // Don't fail the webhook - just log the error
+    }
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
