@@ -45,8 +45,42 @@ export async function generateCustomsDeclarationPDF(
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+  // Download and embed signature image once
+  let signatureImage = null;
+  try {
+    const signatureUrl = 'https://cdn.shopify.com/s/files/1/0044/7722/3030/files/Firma_e_Timbro_RBK.png';
+    console.log('[PDF] Downloading signature image from:', signatureUrl);
+    const signatureResponse = await fetch(signatureUrl);
+    if (signatureResponse.ok) {
+      const signatureArrayBuffer = await signatureResponse.arrayBuffer();
+      signatureImage = await pdfDoc.embedPng(signatureArrayBuffer);
+      console.log('[PDF] ✅ Signature image embedded');
+    } else {
+      console.warn('[PDF] ⚠️ Failed to download signature image:', signatureResponse.status);
+    }
+  } catch (error) {
+    console.error('[PDF] ❌ Error downloading signature image:', error);
+  }
+
   const margin = 40;
   let y = height - margin - 20;
+
+  // Helper function to draw signature at a position
+  const drawSignature = (currentPage: any, atY: number, signatureWidth = 150): number => {
+    if (!signatureImage) return 0;
+
+    const signatureAspectRatio = signatureImage.width / signatureImage.height;
+    const signatureHeight = signatureWidth / signatureAspectRatio;
+
+    currentPage.drawImage(signatureImage, {
+      x: width - margin - signatureWidth, // Right aligned
+      y: atY - signatureHeight,
+      width: signatureWidth,
+      height: signatureHeight,
+    });
+
+    return signatureHeight;
+  };
 
   // ========== HEADER SECTION ==========
   // Company info (left side)
@@ -285,18 +319,19 @@ export async function generateCustomsDeclarationPDF(
   rowY -= 15;
 
   // Declaration
-  page.drawText(
-    'I declare that the above information is true and correct to the best of my knowledge.',
-    {
-      x: margin,
-      y: rowY,
-      size: 8,
-      font: fontRegular,
-      color: rgb(0, 0, 0),
-      maxWidth: 515,
-    }
-  );
-  rowY -= 30;
+  const declarationText = 'I declare that the above information is true and correct to the best of my knowledge.';
+  page.drawText(declarationText, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+    maxWidth: 350, // Reduced width to make room for signature
+  });
+
+  // Add signature #1 - After English declaration, aligned right
+  const sig1Height = drawSignature(page, rowY, 150);
+  rowY -= Math.max(30, sig1Height + 10);
 
   // ========== ITALIAN DECLARATION SECTION ==========
   page.drawText(
@@ -370,7 +405,11 @@ export async function generateCustomsDeclarationPDF(
     `Data ${data.orderDate}`,
   ];
 
-  for (const line of italianTextLines) {
+  let dataLineCount = 0; // Track how many "Data" lines we've encountered
+
+  for (let i = 0; i < italianTextLines.length; i++) {
+    const line = italianTextLines[i];
+
     // Check if we need a new page
     if (rowY < 40) {
       page = pdfDoc.addPage([595, 842]);
@@ -384,47 +423,31 @@ export async function generateCustomsDeclarationPDF(
       font: fontRegular,
       color: rgb(0, 0, 0),
     });
-    rowY -= 10;
-  }
 
-  // Add signature image at the end
-  try {
-    const signatureUrl = 'https://cdn.shopify.com/s/files/1/0044/7722/3030/files/Firma_e_Timbro_RBK.png';
-    console.log('[PDF] Downloading signature image from:', signatureUrl);
+    // Check if this is a "Data XX/XX/XXXX" line
+    if (line.startsWith('Data ')) {
+      dataLineCount++;
 
-    const signatureResponse = await fetch(signatureUrl);
-    if (signatureResponse.ok) {
-      const signatureArrayBuffer = await signatureResponse.arrayBuffer();
-      const signatureImage = await pdfDoc.embedPng(signatureArrayBuffer);
-
-      // Calculate signature dimensions (max width 200px, maintain aspect ratio)
-      const signatureMaxWidth = 200;
-      const signatureAspectRatio = signatureImage.width / signatureImage.height;
-      const signatureWidth = signatureMaxWidth;
-      const signatureHeight = signatureMaxWidth / signatureAspectRatio;
-
-      // Position signature at bottom right, with some margin
-      rowY -= 10; // Add some space before signature
-      if (rowY - signatureHeight < 40) {
-        // Need new page for signature
-        page = pdfDoc.addPage([595, 842]);
-        rowY = height - margin - 20;
+      // Add signature after first "Data" line (signature #2)
+      if (dataLineCount === 1) {
+        const sigHeight = drawSignature(page, rowY, 150);
+        // Signature takes more vertical space than the text line
+        if (sigHeight > 10) {
+          rowY -= sigHeight - 10; // Adjust for signature height
+        }
       }
 
-      page.drawImage(signatureImage, {
-        x: width - margin - signatureWidth, // Right aligned
-        y: rowY - signatureHeight,
-        width: signatureWidth,
-        height: signatureHeight,
-      });
-
-      console.log('[PDF] ✅ Signature image added to PDF');
-    } else {
-      console.warn('[PDF] ⚠️ Failed to download signature image:', signatureResponse.status);
+      // Add signature after second "Data" line (signature #3)
+      if (dataLineCount === 2) {
+        const sigHeight = drawSignature(page, rowY, 150);
+        // Signature takes more vertical space than the text line
+        if (sigHeight > 10) {
+          rowY -= sigHeight - 10; // Adjust for signature height
+        }
+      }
     }
-  } catch (error) {
-    console.error('[PDF] ❌ Error adding signature image:', error);
-    // Continue without signature - don't fail the entire PDF generation
+
+    rowY -= 10;
   }
 
   // Serialize the PDF to bytes
