@@ -333,6 +333,10 @@ export async function generateCustomsDeclarationPDF(
   const sig1Height = drawSignature(page, rowY, 150);
   rowY -= Math.max(30, sig1Height + 10);
 
+  // ========== PAGE BREAK - Start Italian declaration on new page ==========
+  page = pdfDoc.addPage([595, 842]);
+  rowY = height - margin;
+
   // ========== ITALIAN DECLARATION SECTION ==========
   page.drawText(
     'Dichiarazione di libera esportazione - mandato emissione certificati EUR.1 / A.TR.',
@@ -479,10 +483,14 @@ export async function generateCustomsDeclarationPDF(
     font: fontRegular,
     color: rgb(0, 0, 0),
   });
+  rowY -= 10; // Space after "Data" text
 
-  // Signature #2 after first "Data"
-  drawSignature(page, rowY, 150);
-  rowY -= 20;
+  // Leave 5 lines (50 pixels) for physical stamp
+  rowY -= 50;
+
+  // Signature #2 after first "Data" - smaller size
+  const sig2Height = drawSignature(page, rowY, 100);
+  rowY -= Math.max(20, sig2Height + 10);
 
   // Final paragraph
   const finalParagraph = 'Con la presente, inoltre, conferiamo mandato alla societa di richiedere alla Dogana di competenza, qualora previsto dagli accordi doganali vigenti, il rilascio del certificato di circolazione delle merci EUR.1 (ovvero EUR-MED) / A.TR. e a sottoscriverlo per nostro conto. Si dichiara che le merci riferite alla presente fattura sono prodotte in Italia e/o nella Comunita e rispondono alle norme di origine preferenziale. Ci si impegna, inoltre, a fornire, in qualsiasi momento, tutte le informazioni e i documenti necessari ai fini del rilascio del certificato richiesto.';
@@ -513,9 +521,13 @@ export async function generateCustomsDeclarationPDF(
     font: fontRegular,
     color: rgb(0, 0, 0),
   });
+  rowY -= 10; // Space after "Data" text
 
-  // Signature #3 after second "Data"
-  drawSignature(page, rowY, 150);
+  // Leave 5 lines (50 pixels) for physical stamp
+  rowY -= 50;
+
+  // Signature #3 after second "Data" - smaller size
+  drawSignature(page, rowY, 100);
 
   // Serialize the PDF to bytes
   const pdfBytes = await pdfDoc.save();
