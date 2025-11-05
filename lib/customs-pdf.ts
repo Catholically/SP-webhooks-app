@@ -387,6 +387,46 @@ export async function generateCustomsDeclarationPDF(
     rowY -= 10;
   }
 
+  // Add signature image at the end
+  try {
+    const signatureUrl = 'https://cdn.shopify.com/s/files/1/0044/7722/3030/files/Firma_e_Timbro_RBK.png';
+    console.log('[PDF] Downloading signature image from:', signatureUrl);
+
+    const signatureResponse = await fetch(signatureUrl);
+    if (signatureResponse.ok) {
+      const signatureArrayBuffer = await signatureResponse.arrayBuffer();
+      const signatureImage = await pdfDoc.embedPng(signatureArrayBuffer);
+
+      // Calculate signature dimensions (max width 200px, maintain aspect ratio)
+      const signatureMaxWidth = 200;
+      const signatureAspectRatio = signatureImage.width / signatureImage.height;
+      const signatureWidth = signatureMaxWidth;
+      const signatureHeight = signatureMaxWidth / signatureAspectRatio;
+
+      // Position signature at bottom right, with some margin
+      rowY -= 10; // Add some space before signature
+      if (rowY - signatureHeight < 40) {
+        // Need new page for signature
+        page = pdfDoc.addPage([595, 842]);
+        rowY = height - margin - 20;
+      }
+
+      page.drawImage(signatureImage, {
+        x: width - margin - signatureWidth, // Right aligned
+        y: rowY - signatureHeight,
+        width: signatureWidth,
+        height: signatureHeight,
+      });
+
+      console.log('[PDF] ✅ Signature image added to PDF');
+    } else {
+      console.warn('[PDF] ⚠️ Failed to download signature image:', signatureResponse.status);
+    }
+  } catch (error) {
+    console.error('[PDF] ❌ Error adding signature image:', error);
+    // Continue without signature - don't fail the entire PDF generation
+  }
+
   // Serialize the PDF to bytes
   const pdfBytes = await pdfDoc.save();
   return Buffer.from(pdfBytes);
