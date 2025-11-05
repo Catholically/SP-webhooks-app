@@ -102,10 +102,10 @@ ALERT_EMAIL=your-email@example.com
 5. Updates Shopify order metafield `custom.dichiarazione_doganale` with Google Drive URL
 6. Sends email alert if there are errors or missing data
 
-**Required Shopify Metafields:**
-- **Variant metafield**: `global.harmonized_system_code` - HS code (e.g., "71179090")
-- **Product metafield**: `custom.cost` - Product cost in USD (metafield type: money)
-- **Product metafield**: `custom.customs_description` - Customs description (e.g., "Wooden Rosary")
+**Required Shopify Variant Metafields:**
+- `global.harmonized_system_code` - HS code (e.g., "71179090")
+- `custom.cost` - Product cost in USD (metafield type: money)
+- `custom.customs_description` - Customs description (e.g., "Wooden Rosary")
 
 **Google Drive Setup:**
 1. Create a Google Cloud project

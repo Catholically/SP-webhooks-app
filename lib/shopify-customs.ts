@@ -64,15 +64,15 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
                 harmonizedSystemCode: metafield(namespace: "global", key: "harmonized_system_code") {
                   value
                 }
+                customsCost: metafield(namespace: "custom", key: "cost") {
+                  value
+                }
+                customsDescription: metafield(namespace: "custom", key: "customs_description") {
+                  value
+                }
                 product {
                   id
                   title
-                  customsCost: metafield(namespace: "custom", key: "cost") {
-                    value
-                  }
-                  customsDescription: metafield(namespace: "custom", key: "customs_description") {
-                    value
-                  }
                 }
               }
             }
@@ -125,8 +125,8 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
       missingData.push(`${node.title}: Missing HS Code (metafield global.harmonized_system_code on variant)`);
     }
 
-    // Extract customs cost (USD)
-    const costStr = product.customsCost?.value;
+    // Extract customs cost (USD) - from variant metafield
+    const costStr = variant.customsCost?.value;
     let price = 0;
     if (costStr) {
       // Metafield type "money" returns JSON like: {"amount":"2.99","currency_code":"USD"}
@@ -139,13 +139,13 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
       }
     }
     if (!price || price <= 0) {
-      missingData.push(`${product.title}: Missing or invalid cost (metafield custom.cost)`);
+      missingData.push(`${node.title}: Missing or invalid cost (metafield custom.cost on variant)`);
     }
 
-    // Extract customs description
-    const customsDescription = product.customsDescription?.value?.trim();
+    // Extract customs description - from variant metafield
+    const customsDescription = variant.customsDescription?.value?.trim();
     if (!customsDescription) {
-      missingData.push(`${product.title}: Missing customs description (metafield custom.customs_description)`);
+      missingData.push(`${node.title}: Missing customs description (metafield custom.customs_description on variant)`);
     }
 
     // Use default weight (0.1 kg = 100g per item)
