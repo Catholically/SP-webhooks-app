@@ -63,12 +63,12 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
               variant {
                 weight
                 weightUnit
+                harmonizedSystemCode: metafield(namespace: "global", key: "harmonized_system_code") {
+                  value
+                }
                 product {
                   id
                   title
-                  harmonizedSystemCode: metafield(namespace: "custom", key: "harmonized_system_code") {
-                    value
-                  }
                   customsCost: metafield(namespace: "custom", key: "cost") {
                     value
                   }
@@ -113,17 +113,18 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
 
   for (const edge of order.lineItems.edges || []) {
     const node = edge.node;
-    const product = node.variant?.product;
+    const variant = node.variant;
+    const product = variant?.product;
 
-    if (!product) {
+    if (!variant || !product) {
       missingData.push(`${node.title}: No product variant found`);
       continue;
     }
 
-    // Extract HS Code
-    const hsCode = product.harmonizedSystemCode?.value?.trim();
+    // Extract HS Code (from variant.global.harmonized_system_code)
+    const hsCode = variant.harmonizedSystemCode?.value?.trim();
     if (!hsCode) {
-      missingData.push(`${product.title}: Missing HS Code (metafield custom.harmonized_system_code)`);
+      missingData.push(`${node.title}: Missing HS Code (metafield global.harmonized_system_code on variant)`);
     }
 
     // Extract customs cost (USD)
@@ -151,9 +152,9 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
 
     // Calculate weight in kg
     let weightKg = 0;
-    if (node.variant?.weight) {
-      const weight = node.variant.weight;
-      const unit = node.variant.weightUnit || "GRAMS";
+    if (variant.weight) {
+      const weight = variant.weight;
+      const unit = variant.weightUnit || "GRAMS";
 
       switch (unit) {
         case "KILOGRAMS":
