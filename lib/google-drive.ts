@@ -81,14 +81,14 @@ export async function uploadToGoogleDrive(
     throw new Error('Google Drive configuration missing in environment variables');
   }
 
-  // Create date-based folder path: PDF/MM/mmddyyyy
+  // Create date-based folder path: MM/mmddyyyy
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, '0'); // 11
   const day = String(now.getDate()).padStart(2, '0');         // 05
   const year = now.getFullYear();                             // 2025
   const dateFolder = `${month}${day}${year}`;                 // 11052025
 
-  const folderPath = ['PDF', month, dateFolder];
+  const folderPath = [month, dateFolder];
 
   console.log(`[Google Drive] Creating folder structure: ${folderPath.join('/')}`);
   const targetFolderId = await ensureFolderPath(folderPath, baseFolderId);
