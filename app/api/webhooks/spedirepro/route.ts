@@ -55,7 +55,7 @@ async function findOrderIdByName(nameRaw: string): Promise<string | null> {
   return id ? String(id) : null;
 }
 
-async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
+async function metafieldsSet(orderGid: string, kv: Record<string, string>, reference?: string) {
   const entries = Object.entries(kv).map(([key, value]) => {
     // Determina il tipo corretto in base al campo
     let type = "single_line_text_field";
@@ -71,6 +71,17 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
       value,
     };
   });
+
+  // Add spro.reference metafield if reference is provided
+  if (reference) {
+    entries.push({
+      ownerId: orderGid,
+      namespace: "spro",
+      key: "reference",
+      type: "single_line_text_field",
+      value: reference,
+    });
+  }
 
   console.log("Setting metafields:", entries);
 
@@ -257,7 +268,7 @@ export async function POST(req: Request) {
     }
   }
 
-  await metafieldsSet(orderGid, metafields);
+  await metafieldsSet(orderGid, metafields, body?.reference);
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
