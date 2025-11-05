@@ -347,108 +347,175 @@ export async function generateCustomsDeclarationPDF(
   );
   rowY -= 20;
 
-  // Italian text with line breaks
-  const italianTextLines = [
-    `Io sottoscritto ${data.legalRepName} in qualita di legale rappresentante della societa ${data.companyName}`,
-    `Dichiaro sotto la mia personale responsabilita che le merci contenute nella spedizione:`,
-    data.tracking,
-    `Fattura n. ${data.invoiceNumber} del ${data.orderDate}`,
-    `Customer: ${data.receiverName}`,
-    '',
-    '- Non rientrano tra quelle protette dalla Convenzione di Washington (CITES), come da regolamento (CE)',
-    '  n. 338/97 del Consiglio del 9 dicembre 1996 e successive modifiche.',
-    '- Non rientrano nell\'elenco dei beni come da regolamento (CE) n. 116/2009 del Consiglio del 18',
-    '  dicembre 2008 relativo all\'esportazione di beni culturali.',
-    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 821/2021 del Parlamento europeo',
-    '  e del Consiglio del 20 maggio 2021 che istituisce un regime dell\'Unione di controllo delle',
-    '  esportazioni, dell\'intermediazione, dell\'assistenza tecnica, del transito e del trasferimento',
-    '  di prodotti a duplice uso.',
-    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 125/2019 del Parlamento europeo',
-    '  e del Consiglio del 16 gennaio 2019 relativo al commercio di determinate merci che potrebbero',
-    '  essere utilizzate per la pena di morte, per la tortura o per altri trattamenti o pene crudeli,',
-    '  inumani o degradanti.',
-    '- Non contengono pelliccia di cane e di gatto in conformita al regolamento (CE) n. 1523/2007 del',
-    '  Parlamento europeo e del Consiglio dell\'11 dicembre 2007.',
-    '- Non sono soggette alle disposizioni del regolamento (UE) n. 649/2012 del Parlamento europeo e',
-    '  del Consiglio del 4 luglio 2012 sull\'esportazione ed importazione di sostanze chimiche pericolose.',
-    '- Non sono soggette alla presentazione della licenza di esportazione come da regolamento (CE)',
-    '  n. 1005/2009 del Parlamento europeo e del Consiglio del 16 settembre 2009 sulle sostanze che',
-    '  riducono lo strato di ozono.',
-    '- Non sono soggette alle disposizioni del regolamento (CE) n. 1013/2006 del Parlamento europeo',
-    '  e del Consiglio del 14 giugno 2006 relativo alle spedizioni di rifiuti.',
-    '- Non rientrano nell\'elenco dei beni come da regolamento (CE) n. 1210/2003 del Consiglio del',
-    '  7 luglio 2003 relativo a talune specifiche restrizioni alle relazioni economiche e finanziarie',
-    '  con l\'Iraq.',
-    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 2016/44 del Consiglio del',
-    '  18 gennaio 2016 concernente misure restrittive in considerazione della situazione in Libia.',
-    '- Non rientrano nell\'elenco dei beni come da regolamento (CE) n. 765/2006 del Consiglio del',
-    '  18 maggio 2006 concernente misure restrittive nei confronti della Bielorussia.',
-    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 36/2012 del Consiglio del',
-    '  18 gennaio 2012 concernente misure restrittive in considerazione della situazione in Siria.',
-    '- Non sono soggette alle disposizioni del regolamento (UE) n. 833/2014 del Consiglio del 31',
-    '  luglio 2014 concernente misure restrittive in considerazione delle azioni della Russia che',
-    '  destabilizzano la situazione in Ucraina.',
-    '- Non sono soggette alle disposizioni della decisione 2014/512/PESC del Consiglio del 31 luglio',
-    '  2014 concernente misure restrittive in considerazione delle azioni della Russia che',
-    '  destabilizzano la situazione in Ucraina.',
-    '',
-    `Data ${data.orderDate}`,
-    '',
-    'Con la presente, inoltre, conferiamo mandato alla societa di richiedere alla Dogana di',
-    'competenza, qualora previsto dagli accordi doganali vigenti, il rilascio del certificato di',
-    'circolazione delle merci EUR.1 (ovvero EUR-MED) / A.TR. e a sottoscriverlo per nostro conto.',
-    'Si dichiara che le merci riferite alla presente fattura sono prodotte in Italia e/o nella',
-    'Comunita e rispondono alle norme di origine preferenziale. Ci si impegna, inoltre, a fornire,',
-    'in qualsiasi momento, tutte le informazioni e i documenti necessari ai fini del rilascio del',
-    'certificato richiesto.',
-    '',
-    `Data ${data.orderDate}`,
+  // First two lines of Italian declaration
+  page.drawText(`Io sottoscritto ${data.legalRepName} in qualita di legale rappresentante della societa ${data.companyName}`, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+  rowY -= 10;
+
+  page.drawText(`Dichiaro sotto la mia personale responsabilita che le merci contenute nella spedizione:`, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+  rowY -= 10;
+
+  // Tracking number - BOLD
+  page.drawText(data.tracking, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontBold,
+    color: rgb(0, 0, 0),
+  });
+  rowY -= 10;
+
+  // Invoice line - "Fattura n." normal, invoice number BOLD, "del date" normal
+  let currentX = margin;
+  page.drawText('Fattura n. ', {
+    x: currentX,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+  currentX += fontRegular.widthOfTextAtSize('Fattura n. ', 8);
+
+  page.drawText(data.invoiceNumber, {
+    x: currentX,
+    y: rowY,
+    size: 8,
+    font: fontBold,
+    color: rgb(0, 0, 0),
+  });
+  currentX += fontBold.widthOfTextAtSize(data.invoiceNumber, 8);
+
+  page.drawText(` del ${data.orderDate}`, {
+    x: currentX,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+  rowY -= 10;
+
+  // Customer line - "Customer:" normal, name BOLD
+  currentX = margin;
+  page.drawText('Customer: ', {
+    x: currentX,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+  currentX += fontRegular.widthOfTextAtSize('Customer: ', 8);
+
+  page.drawText(data.receiverName, {
+    x: currentX,
+    y: rowY,
+    size: 8,
+    font: fontBold,
+    color: rgb(0, 0, 0),
+  });
+  rowY -= 10;
+
+  // Empty line
+  rowY -= 10;
+
+  // Italian declaration paragraphs with proper word wrap
+  const declarationParagraphs = [
+    '- Non rientrano tra quelle protette dalla Convenzione di Washington (CITES), come da regolamento (CE) n. 338/97 del Consiglio del 9 dicembre 1996 e successive modifiche.',
+    '- Non rientrano nell\'elenco dei beni come da regolamento (CE) n. 116/2009 del Consiglio del 18 dicembre 2008 relativo all\'esportazione di beni culturali.',
+    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 821/2021 del Parlamento europeo e del Consiglio del 20 maggio 2021 che istituisce un regime dell\'Unione di controllo delle esportazioni, dell\'intermediazione, dell\'assistenza tecnica, del transito e del trasferimento di prodotti a duplice uso.',
+    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 125/2019 del Parlamento europeo e del Consiglio del 16 gennaio 2019 relativo al commercio di determinate merci che potrebbero essere utilizzate per la pena di morte, per la tortura o per altri trattamenti o pene crudeli, inumani o degradanti.',
+    '- Non contengono pelliccia di cane e di gatto in conformita al regolamento (CE) n. 1523/2007 del Parlamento europeo e del Consiglio dell\'11 dicembre 2007.',
+    '- Non sono soggette alle disposizioni del regolamento (UE) n. 649/2012 del Parlamento europeo e del Consiglio del 4 luglio 2012 sull\'esportazione ed importazione di sostanze chimiche pericolose.',
+    '- Non sono soggette alla presentazione della licenza di esportazione come da regolamento (CE) n. 1005/2009 del Parlamento europeo e del Consiglio del 16 settembre 2009 sulle sostanze che riducono lo strato di ozono.',
+    '- Non sono soggette alle disposizioni del regolamento (CE) n. 1013/2006 del Parlamento europeo e del Consiglio del 14 giugno 2006 relativo alle spedizioni di rifiuti.',
+    '- Non rientrano nell\'elenco dei beni come da regolamento (CE) n. 1210/2003 del Consiglio del 7 luglio 2003 relativo a talune specifiche restrizioni alle relazioni economiche e finanziarie con l\'Iraq.',
+    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 2016/44 del Consiglio del 18 gennaio 2016 concernente misure restrittive in considerazione della situazione in Libia.',
+    '- Non rientrano nell\'elenco dei beni come da regolamento (CE) n. 765/2006 del Consiglio del 18 maggio 2006 concernente misure restrittive nei confronti della Bielorussia.',
+    '- Non rientrano nell\'elenco dei beni come da regolamento (UE) n. 36/2012 del Consiglio del 18 gennaio 2012 concernente misure restrittive in considerazione della situazione in Siria.',
+    '- Non sono soggette alle disposizioni del regolamento (UE) n. 833/2014 del Consiglio del 31 luglio 2014 concernente misure restrittive in considerazione delle azioni della Russia che destabilizzano la situazione in Ucraina.',
+    '- Non sono soggette alle disposizioni della decisione 2014/512/PESC del Consiglio del 31 luglio 2014 concernente misure restrittive in considerazione delle azioni della Russia che destabilizzano la situazione in Ucraina.',
   ];
 
-  let dataLineCount = 0; // Track how many "Data" lines we've encountered
-
-  for (let i = 0; i < italianTextLines.length; i++) {
-    const line = italianTextLines[i];
-
-    // Check if we need a new page
-    if (rowY < 40) {
+  // Draw declaration paragraphs with word wrap
+  for (const paragraph of declarationParagraphs) {
+    if (rowY < 60) {
       page = pdfDoc.addPage([595, 842]);
       rowY = height - margin;
     }
 
-    page.drawText(line, {
+    const textHeight = fontRegular.heightAtSize(8);
+    const lines = page.drawText(paragraph, {
       x: margin,
       y: rowY,
       size: 8,
       font: fontRegular,
       color: rgb(0, 0, 0),
+      maxWidth: 515,
+      lineHeight: 10,
     });
 
-    // Check if this is a "Data XX/XX/XXXX" line
-    if (line.startsWith('Data ')) {
-      dataLineCount++;
-
-      // Add signature after first "Data" line (signature #2)
-      if (dataLineCount === 1) {
-        const sigHeight = drawSignature(page, rowY, 150);
-        // Signature takes more vertical space than the text line
-        if (sigHeight > 10) {
-          rowY -= sigHeight - 10; // Adjust for signature height
-        }
-      }
-
-      // Add signature after second "Data" line (signature #3)
-      if (dataLineCount === 2) {
-        const sigHeight = drawSignature(page, rowY, 150);
-        // Signature takes more vertical space than the text line
-        if (sigHeight > 10) {
-          rowY -= sigHeight - 10; // Adjust for signature height
-        }
-      }
-    }
-
-    rowY -= 10;
+    // Estimate number of lines (rough calculation)
+    const estimatedLines = Math.ceil(fontRegular.widthOfTextAtSize(paragraph, 8) / 515);
+    rowY -= (estimatedLines * 10) + 3; // Add small spacing between paragraphs
   }
+
+  rowY -= 10;
+
+  // First "Data" line
+  page.drawText(`Data ${data.orderDate}`, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+
+  // Signature #2 after first "Data"
+  drawSignature(page, rowY, 150);
+  rowY -= 20;
+
+  // Final paragraph
+  const finalParagraph = 'Con la presente, inoltre, conferiamo mandato alla societa di richiedere alla Dogana di competenza, qualora previsto dagli accordi doganali vigenti, il rilascio del certificato di circolazione delle merci EUR.1 (ovvero EUR-MED) / A.TR. e a sottoscriverlo per nostro conto. Si dichiara che le merci riferite alla presente fattura sono prodotte in Italia e/o nella Comunita e rispondono alle norme di origine preferenziale. Ci si impegna, inoltre, a fornire, in qualsiasi momento, tutte le informazioni e i documenti necessari ai fini del rilascio del certificato richiesto.';
+
+  if (rowY < 80) {
+    page = pdfDoc.addPage([595, 842]);
+    rowY = height - margin;
+  }
+
+  page.drawText(finalParagraph, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+    maxWidth: 515,
+    lineHeight: 10,
+  });
+
+  const finalEstimatedLines = Math.ceil(fontRegular.widthOfTextAtSize(finalParagraph, 8) / 515);
+  rowY -= (finalEstimatedLines * 10) + 10;
+
+  // Second "Data" line
+  page.drawText(`Data ${data.orderDate}`, {
+    x: margin,
+    y: rowY,
+    size: 8,
+    font: fontRegular,
+    color: rgb(0, 0, 0),
+  });
+
+  // Signature #3 after second "Data"
+  drawSignature(page, rowY, 150);
 
   // Serialize the PDF to bytes
   const pdfBytes = await pdfDoc.save();
