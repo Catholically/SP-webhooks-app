@@ -30,6 +30,7 @@ function adminBase() {
 
 async function shopifyFetch(path: string, init?: RequestInit) {
   const token = process.env.SHOPIFY_ADMIN_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || "";
+  console.log("[DEBUG] Shopify token exists:", !!token, "length:", token.length);
   return fetch(`${adminBase()}${path}`, {
     ...init,
     headers: {
@@ -169,7 +170,10 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "missing merchant_reference or tracking" });
   }
 
+  console.log("[DEBUG] About to find order by name:", merchantRef);
+
   const orderIdNum = await findOrderIdByName(merchantRef);
+  console.log("[DEBUG] Order ID found:", orderIdNum);
   if (!orderIdNum) {
     return json(200, { ok: true, skipped: "order not found by name", merchant_reference: merchantRef });
   }
