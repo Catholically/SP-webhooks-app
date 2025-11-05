@@ -74,6 +74,7 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
                   id
                   title
                   productType
+                  vendor
                 }
               }
             }
@@ -128,6 +129,13 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
 
     if (!variant || !product) {
       missingData.push(`${node.title}: No product variant found`);
+      continue;
+    }
+
+    // Skip products with vendor = "Excluded"
+    const vendor = (product.vendor || '').trim();
+    if (vendor.toLowerCase() === 'excluded') {
+      console.log(`[Customs] Skipping excluded vendor item: ${node.title}`);
       continue;
     }
 
