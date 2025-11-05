@@ -236,9 +236,10 @@ export async function handleCustomsDeclaration(
       console.warn('[Customs] Failed to upload to SpedirePro, but continuing with Drive upload');
     }
 
-    // Step 6: Upload to Google Drive with tracking number as filename
+    // Step 6: Upload to Google Drive with order number as filename
     console.log('[Customs] Uploading to Google Drive...');
-    const driveUrl = await uploadToGoogleDrive(pdfBuffer, tracking, 'customs');
+    const orderNumber = orderName.replace('#', ''); // e.g., "35622182025"
+    const driveUrl = await uploadToGoogleDrive(pdfBuffer, orderNumber, 'customs');
     console.log(`[Customs] Uploaded to Google Drive: ${driveUrl}`);
 
     // Step 7: Update Shopify metafield custom.doganale

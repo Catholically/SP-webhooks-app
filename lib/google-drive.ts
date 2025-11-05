@@ -64,8 +64,8 @@ async function ensureFolderPath(
 /**
  * Upload a PDF file to Google Drive with date-based folder structure
  * @param pdfBuffer - PDF file as Buffer
- * @param fileName - Name of the file (without .pdf extension)
- * @param type - Type of document ('label' or 'customs')
+ * @param fileName - Name of the file (without .pdf extension) - typically order number
+ * @param type - Type of document ('label' -> fileName.pdf, 'customs' -> fileName_d.pdf)
  * @returns Google Drive file URL
  */
 export async function uploadToGoogleDrive(
@@ -107,8 +107,8 @@ export async function uploadToGoogleDrive(
 
   // Determine final filename based on type
   const finalFileName = type === 'label'
-    ? `${fileName}_label.pdf`   // e.g., 1Z71V2810418763409_label.pdf
-    : `${fileName}.pdf`;          // e.g., 1Z71V2810418763409.pdf (customs)
+    ? `${fileName}.pdf`           // e.g., 35622182025.pdf (label)
+    : `${fileName}_d.pdf`;        // e.g., 35622182025_d.pdf (customs)
 
   // Upload file to Google Drive
   const fileMetadata = {
@@ -154,8 +154,8 @@ export async function uploadToGoogleDrive(
 /**
  * Download PDF from URL and upload to Google Drive
  * @param url - URL to download PDF from
- * @param fileName - Name for the file (without .pdf extension)
- * @param type - Type of document ('label' or 'customs')
+ * @param fileName - Name for the file (without .pdf extension) - typically order number
+ * @param type - Type of document ('label' -> fileName.pdf, 'customs' -> fileName_d.pdf)
  * @returns Google Drive file URL
  */
 export async function downloadAndUploadToGoogleDrive(

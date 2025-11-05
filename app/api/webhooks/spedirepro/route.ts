@@ -254,7 +254,8 @@ export async function POST(req: Request) {
   if (labelUrl) {
     try {
       console.log("[Label Storage] Downloading and uploading label to Google Drive...");
-      permanentLabelUrl = await downloadAndUploadToGoogleDrive(labelUrl, tracking, 'label');
+      const orderNumber = merchantRef.replace('#', ''); // e.g., "35622182025"
+      permanentLabelUrl = await downloadAndUploadToGoogleDrive(labelUrl, orderNumber, 'label');
       console.log("[Label Storage] ✅ Label stored on Google Drive:", permanentLabelUrl);
 
       // Update metafields with permanent Google Drive URL
