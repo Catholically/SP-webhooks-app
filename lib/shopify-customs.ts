@@ -61,8 +61,6 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
               title
               quantity
               variant {
-                weight
-                weightUnit
                 harmonizedSystemCode: metafield(namespace: "global", key: "harmonized_system_code") {
                   value
                 }
@@ -150,29 +148,9 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
       missingData.push(`${product.title}: Missing customs description (metafield custom.customs_description)`);
     }
 
-    // Calculate weight in kg
-    let weightKg = 0;
-    if (variant.weight) {
-      const weight = variant.weight;
-      const unit = variant.weightUnit || "GRAMS";
-
-      switch (unit) {
-        case "KILOGRAMS":
-          weightKg = weight;
-          break;
-        case "GRAMS":
-          weightKg = weight / 1000;
-          break;
-        case "POUNDS":
-          weightKg = weight * 0.453592;
-          break;
-        case "OUNCES":
-          weightKg = weight * 0.0283495;
-          break;
-        default:
-          weightKg = weight / 1000; // Default to grams
-      }
-    }
+    // Use default weight (0.1 kg = 100g per item)
+    // Weight data not available via GraphQL API on variants
+    const weightKg = 0.1;
 
     lineItems.push({
       title: node.title || product.title,
