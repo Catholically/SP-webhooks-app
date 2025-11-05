@@ -127,7 +127,23 @@ async function fulfill(foId: string, tracking: string, trackingUrl?: string, com
       company: company || "UPS",
     },
   };
-  await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
+
+  console.log("[DEBUG] Fulfill mutation variables:", JSON.stringify(vars, null, 2));
+  const response = await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
+  const result = await response.json();
+
+  console.log("[DEBUG] Fulfill mutation response:", JSON.stringify(result, null, 2));
+
+  if (result.data?.fulfillmentCreateV2?.userErrors?.length > 0) {
+    console.error("[DEBUG] ❌ Fulfillment userErrors:", result.data.fulfillmentCreateV2.userErrors);
+    throw new Error(`Fulfillment failed: ${JSON.stringify(result.data.fulfillmentCreateV2.userErrors)}`);
+  }
+
+  if (result.data?.fulfillmentCreateV2?.fulfillment?.id) {
+    console.log("[DEBUG] ✅ Fulfillment created successfully:", result.data.fulfillmentCreateV2.fulfillment.id);
+  } else {
+    console.error("[DEBUG] ❌ Unexpected fulfillment response (no fulfillment ID)");
+  }
 }
 
 export async function POST(req: Request) {
