@@ -238,7 +238,7 @@ export async function handleCustomsDeclaration(
 
     // Step 6: Upload to Google Drive with tracking number as filename
     console.log('[Customs] Uploading to Google Drive...');
-    const driveUrl = await uploadToGoogleDrive(pdfBuffer, tracking);
+    const driveUrl = await uploadToGoogleDrive(pdfBuffer, tracking, 'customs');
     console.log(`[Customs] Uploaded to Google Drive: ${driveUrl}`);
 
     // Step 7: Update Shopify metafield custom.doganale

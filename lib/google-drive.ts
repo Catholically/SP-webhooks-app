@@ -2,22 +2,96 @@ import { google } from 'googleapis';
 import { Readable } from 'stream';
 
 /**
- * Upload a PDF file to Google Drive
+ * Create or find folder by path in Shared Drive
+ * @param folderPath - Array of folder names (e.g., ['PDF', '11', '11052025'])
+ * @param parentFolderId - Parent folder ID to start from
+ * @returns Folder ID of the final folder in the path
+ */
+async function ensureFolderPath(
+  folderPath: string[],
+  parentFolderId: string
+): Promise<string> {
+  const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+  const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
+
+  if (!serviceAccountEmail || !privateKey) {
+    throw new Error('Google Drive configuration missing');
+  }
+
+  const auth = new google.auth.JWT({
+    email: serviceAccountEmail,
+    key: privateKey.replace(/\\n/g, '\n'),
+    scopes: ['https://www.googleapis.com/auth/drive'],
+  });
+
+  const drive = google.drive({ version: 'v3', auth });
+
+  let currentParent = parentFolderId;
+
+  // Create/find each folder in the path
+  for (const folderName of folderPath) {
+    // Check if folder exists
+    const searchResponse = await drive.files.list({
+      q: `name='${folderName}' and '${currentParent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: 'files(id, name)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+
+    if (searchResponse.data.files && searchResponse.data.files.length > 0) {
+      // Folder exists, use it
+      currentParent = searchResponse.data.files[0].id!;
+      console.log(`[Google Drive] Found existing folder: ${folderName} (${currentParent})`);
+    } else {
+      // Create folder
+      const createResponse = await drive.files.create({
+        requestBody: {
+          name: folderName,
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: [currentParent],
+        },
+        fields: 'id',
+        supportsAllDrives: true,
+      });
+      currentParent = createResponse.data.id!;
+      console.log(`[Google Drive] Created folder: ${folderName} (${currentParent})`);
+    }
+  }
+
+  return currentParent;
+}
+
+/**
+ * Upload a PDF file to Google Drive with date-based folder structure
  * @param pdfBuffer - PDF file as Buffer
- * @param fileName - Name of the file (e.g., tracking number)
+ * @param fileName - Name of the file (without .pdf extension)
+ * @param type - Type of document ('label' or 'customs')
  * @returns Google Drive file URL
  */
 export async function uploadToGoogleDrive(
   pdfBuffer: Buffer,
-  fileName: string
+  fileName: string,
+  type: 'label' | 'customs' = 'customs'
 ): Promise<string> {
-  const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+  const baseFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
   const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
 
-  if (!folderId || !serviceAccountEmail || !privateKey) {
+  if (!baseFolderId || !serviceAccountEmail || !privateKey) {
     throw new Error('Google Drive configuration missing in environment variables');
   }
+
+  // Create date-based folder path: PDF/MM/mmddyyyy
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0'); // 11
+  const day = String(now.getDate()).padStart(2, '0');         // 05
+  const year = now.getFullYear();                             // 2025
+  const dateFolder = `${month}${day}${year}`;                 // 11052025
+
+  const folderPath = ['PDF', month, dateFolder];
+
+  console.log(`[Google Drive] Creating folder structure: ${folderPath.join('/')}`);
+  const targetFolderId = await ensureFolderPath(folderPath, baseFolderId);
 
   // Create JWT client for service account authentication
   const auth = new google.auth.JWT({
@@ -31,10 +105,15 @@ export async function uploadToGoogleDrive(
   // Convert buffer to readable stream
   const stream = Readable.from(pdfBuffer);
 
+  // Determine final filename based on type
+  const finalFileName = type === 'label'
+    ? `${fileName}_label.pdf`   // e.g., 1Z71V2810418763409_label.pdf
+    : `${fileName}.pdf`;          // e.g., 1Z71V2810418763409.pdf (customs)
+
   // Upload file to Google Drive
   const fileMetadata = {
-    name: `${fileName}.pdf`,
-    parents: [folderId],
+    name: finalFileName,
+    parents: [targetFolderId],
   };
 
   const media = {
@@ -67,9 +146,36 @@ export async function uploadToGoogleDrive(
   const viewLink = file.data.webViewLink ||
                    `https://drive.google.com/file/d/${file.data.id}/view`;
 
-  console.log(`[Google Drive] Uploaded ${fileName}.pdf: ${viewLink}`);
+  console.log(`[Google Drive] Uploaded ${finalFileName}: ${viewLink}`);
 
   return viewLink;
+}
+
+/**
+ * Download PDF from URL and upload to Google Drive
+ * @param url - URL to download PDF from
+ * @param fileName - Name for the file (without .pdf extension)
+ * @param type - Type of document ('label' or 'customs')
+ * @returns Google Drive file URL
+ */
+export async function downloadAndUploadToGoogleDrive(
+  url: string,
+  fileName: string,
+  type: 'label' | 'customs' = 'customs'
+): Promise<string> {
+  console.log(`[Google Drive] Downloading PDF from: ${url}`);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download PDF: ${response.status} ${response.statusText}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const pdfBuffer = Buffer.from(arrayBuffer);
+
+  console.log(`[Google Drive] Downloaded ${pdfBuffer.length} bytes`);
+
+  return uploadToGoogleDrive(pdfBuffer, fileName, type);
 }
 
 /**

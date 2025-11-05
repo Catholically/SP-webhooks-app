@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 
 import { handleCustomsDeclaration } from '@/lib/customs-handler';
 import { sendLabelEmail } from '@/lib/email-label';
+import { downloadAndUploadToGoogleDrive } from '@/lib/google-drive';
 
 type SproWebhook = {
   update_type?: string;
@@ -234,26 +235,41 @@ export async function POST(req: Request) {
     courier_group: courierGroup,  // Nome standard (es: "UPS")
   };
 
-  // Only add URL metafields if they have values
+  // Only add tracking URL metafield if it has value
   if (trackingUrl) metafields.tracking_url = trackingUrl;
+
+  // Download label from AWS and upload to Google Drive for permanent storage
+  let permanentLabelUrl = labelUrl; // Fallback to original URL
   if (labelUrl) {
-    metafields.label_url = labelUrl;
-    metafields.ldv_url = labelUrl;  // Aggiunto per compatibilità
+    try {
+      console.log("[Label Storage] Downloading and uploading label to Google Drive...");
+      permanentLabelUrl = await downloadAndUploadToGoogleDrive(labelUrl, tracking, 'label');
+      console.log("[Label Storage] ✅ Label stored on Google Drive:", permanentLabelUrl);
+
+      // Update metafields with permanent Google Drive URL
+      metafields.label_url = permanentLabelUrl;
+      metafields.ldv_url = permanentLabelUrl;  // Aggiunto per compatibilità
+    } catch (err) {
+      console.error("[Label Storage] ❌ Failed to upload label to Google Drive:", err);
+      // Fallback to AWS URL
+      metafields.label_url = labelUrl;
+      metafields.ldv_url = labelUrl;
+    }
   }
 
   await metafieldsSet(orderGid, metafields);
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
-  // Check if order has MI-CREATE tag and send label email
-  if (labelUrl) {
+  // Check if order has MI-CREATE tag and send label email with PDF attachment
+  if (permanentLabelUrl) {
     try {
       const tags = await getOrderTags(orderGid);
       console.log("[Label Email] Order tags:", tags);
 
       if (tags.includes("MI-CREATE")) {
-        console.log("[Label Email] MI-CREATE tag found, sending label email");
-        await sendLabelEmail(merchantRef, labelUrl);
+        console.log("[Label Email] MI-CREATE tag found, sending label email with PDF attachment");
+        await sendLabelEmail(merchantRef, permanentLabelUrl);
       } else {
         console.log("[Label Email] No MI-CREATE tag, skipping label email");
       }
