@@ -2,6 +2,7 @@
 export const runtime = "nodejs";
 
 import { handleCustomsDeclaration } from '@/lib/customs-handler';
+import { sendLabelEmail } from '@/lib/email-label';
 
 type SproWebhook = {
   update_type?: string;
@@ -105,6 +106,22 @@ async function firstFO(orderGid: string): Promise<string | null> {
   });
   const jsonData = await r.json();
   return jsonData?.data?.order?.fulfillmentOrders?.nodes?.[0]?.id || null;
+}
+
+async function getOrderTags(orderGid: string): Promise<string[]> {
+  const q = `
+    query($id: ID!) {
+      order(id: $id) {
+        tags
+      }
+    }`;
+  const r = await shopifyFetch("/graphql.json", {
+    method: "POST",
+    body: JSON.stringify({ query: q, variables: { id: orderGid } }),
+  });
+  const jsonData = await r.json();
+  const tags = jsonData?.data?.order?.tags || [];
+  return Array.isArray(tags) ? tags : [];
 }
 
 async function fulfill(foId: string, tracking: string, trackingUrl?: string, company?: string) {
@@ -227,6 +244,24 @@ export async function POST(req: Request) {
   await metafieldsSet(orderGid, metafields);
 
   console.log("Metafields set successfully for order:", orderIdNum);
+
+  // Check if order has MI-CREATE tag and send label email
+  if (labelUrl) {
+    try {
+      const tags = await getOrderTags(orderGid);
+      console.log("[Label Email] Order tags:", tags);
+
+      if (tags.includes("MI-CREATE")) {
+        console.log("[Label Email] MI-CREATE tag found, sending label email");
+        await sendLabelEmail(merchantRef, labelUrl);
+      } else {
+        console.log("[Label Email] No MI-CREATE tag, skipping label email");
+      }
+    } catch (err) {
+      console.error("[Label Email] Error checking tags or sending email:", err);
+      // Don't fail the webhook - just log the error
+    }
+  }
 
   // Auto-fulfill the order with tracking information
   // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")

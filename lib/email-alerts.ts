@@ -13,7 +13,7 @@ interface CustomsErrorAlert {
 /**
  * Get Resend client (lazy initialization to avoid build-time errors)
  */
-function getResendClient(): Resend | null {
+export function getResendClient(): Resend | null {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.error('[Email Alert] RESEND_API_KEY not configured');
