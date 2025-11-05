@@ -19,6 +19,8 @@ type SproWebhook = {
   exception_status?: number;
   tracking_url?: string;
   label?: { link?: string; expire_at?: string };
+  price?: number;  // Shipping cost/price
+  cost?: number;   // Alternative field name
 };
 
 const json = (status: number, obj: unknown) =>
@@ -221,7 +223,9 @@ export async function POST(req: Request) {
     courier,
     courierGroup,
     rawCourier: body?.courier,
-    rawCourierGroup: body?.courier_group
+    rawCourierGroup: body?.courier_group,
+    price: body?.price,
+    cost: body?.cost
   });
 
   if (!merchantRef || !tracking) {
@@ -248,6 +252,12 @@ export async function POST(req: Request) {
 
   // Only add tracking URL metafield if it has value
   if (trackingUrl) metafields.tracking_url = trackingUrl;
+
+  // Add shipping price if available (try both 'price' and 'cost' fields)
+  const shippingPrice = body?.price ?? body?.cost;
+  if (shippingPrice !== undefined && shippingPrice !== null) {
+    metafields.shipping_price = String(shippingPrice);
+  }
 
   // Download label from AWS and upload to Google Drive for permanent storage
   let permanentLabelUrl = labelUrl; // Fallback to original URL
