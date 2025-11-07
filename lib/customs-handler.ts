@@ -17,6 +17,49 @@ interface OrderShippingInfo {
 }
 
 /**
+ * Check if customs declaration already exists for this order
+ */
+async function hasExistingCustomsDeclaration(orderId: string): Promise<boolean> {
+  const store = process.env.SHOPIFY_STORE || process.env.SHOPIFY_SHOP || "holy-trove";
+  const ver = process.env.SHOPIFY_API_VERSION || "2025-10";
+  const adminBase = `https://${store}.myshopify.com/admin/api/${ver}`;
+  const token = process.env.SHOPIFY_ADMIN_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || "";
+
+  const orderGid = orderId.startsWith('gid://')
+    ? orderId
+    : `gid://shopify/Order/${orderId}`;
+
+  const query = `
+    query getCustomsMetafield($id: ID!) {
+      order(id: $id) {
+        metafield(namespace: "custom", key: "doganale") {
+          value
+        }
+      }
+    }
+  `;
+
+  try {
+    const response = await fetch(`${adminBase}/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'X-Shopify-Access-Token': token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query, variables: { id: orderGid } }),
+    });
+
+    const data = await response.json();
+    const metafieldValue = data?.data?.order?.metafield?.value;
+
+    return !!metafieldValue; // Returns true if metafield exists and has a value
+  } catch (error) {
+    console.error('[Customs] Error checking existing customs declaration:', error);
+    return false; // On error, assume it doesn't exist (safe to try generation)
+  }
+}
+
+/**
  * Fetch order shipping info from Shopify
  */
 async function fetchOrderShippingInfo(orderId: string): Promise<OrderShippingInfo | null> {
@@ -195,6 +238,13 @@ export async function handleCustomsDeclaration(
   console.log(`[Customs] Starting customs declaration check for order ${orderName}`);
 
   try {
+    // Step 0: Check if customs declaration already exists
+    const alreadyExists = await hasExistingCustomsDeclaration(orderId);
+    if (alreadyExists) {
+      console.log(`[Customs] ✅ Customs declaration already exists for order ${orderName}, skipping`);
+      return;
+    }
+
     // Step 1: Fetch shipping info to check country
     const shippingInfo = await fetchOrderShippingInfo(orderId);
     if (!shippingInfo) {
@@ -252,8 +302,16 @@ export async function handleCustomsDeclaration(
   } catch (error) {
     console.error('[Customs] ❌ Error processing customs declaration:', error);
 
-    // Send error alert email
     const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // If error is due to missing product data, skip silently (Phase 1 orders)
+    // These are old orders created before customs automation was implemented
+    if (errorMessage.includes('Missing customs data') || errorMessage.includes('No product variant found')) {
+      console.warn(`[Customs] ⚠️ Skipping customs for order ${orderName} - missing product data (likely Phase 1 order)`);
+      return; // Skip silently, don't send alert
+    }
+
+    // For other errors, send alert email
     const missingData = errorMessage.includes('Missing customs data')
       ? errorMessage.split('\n').slice(1)
       : undefined;
