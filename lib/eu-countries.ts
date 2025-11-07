@@ -53,3 +53,24 @@ export function isEUCountry(countryCode: string): boolean {
   const code = countryCode.trim().toUpperCase();
   return EU_COUNTRIES.includes(code as any);
 }
+
+/**
+ * Check if a country is USA (where we prepay customs)
+ * @param countryCode - ISO 3166-1 alpha-2 country code
+ * @returns true if country is USA
+ */
+export function isUSA(countryCode: string): boolean {
+  if (!countryCode) return false;
+  const code = countryCode.trim().toUpperCase();
+  return code === 'US';
+}
+
+/**
+ * Check if we can auto-process labels for this country
+ * (USA with prepaid customs, or EU with no customs needed)
+ * @param countryCode - ISO 3166-1 alpha-2 country code
+ * @returns true if we can auto-process
+ */
+export function canAutoProcessLabel(countryCode: string): boolean {
+  return isUSA(countryCode) || isEUCountry(countryCode);
+}

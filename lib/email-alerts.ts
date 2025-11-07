@@ -117,6 +117,112 @@ export async function sendCustomsErrorAlert(error: CustomsErrorAlert): Promise<v
 }
 
 /**
+ * Send an alert for unsupported country (not USA or EU)
+ * @param orderName - Order name
+ * @param orderNumber - Order number
+ * @param countryCode - Country code
+ * @param countryName - Country name
+ * @param tracking - Tracking number
+ * @param driveUrl - Google Drive URL for customs doc
+ */
+export async function sendUnsupportedCountryAlert(
+  orderName: string,
+  orderNumber: string,
+  countryCode: string,
+  countryName: string,
+  tracking?: string,
+  driveUrl?: string
+): Promise<void> {
+  const alertEmail = process.env.ALERT_EMAIL;
+
+  if (!alertEmail) {
+    console.error('[Email Alert] ALERT_EMAIL not configured');
+    return;
+  }
+
+  const resend = getResendClient();
+  if (!resend) {
+    return;
+  }
+
+  const subject = `⚠️ Manual Label Required - Order ${orderName} (${countryName})`;
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background-color: #ff9800; color: white; padding: 15px; border-radius: 5px; }
+          .content { background-color: #f9f9f9; padding: 20px; border-radius: 5px; margin-top: 20px; }
+          .warning-box { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 15px 0; }
+          .info { margin: 10px 0; }
+          .label { font-weight: bold; }
+          .action-box { background-color: #e3f2fd; border-left: 4px solid #2196f3; padding: 15px; margin: 15px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h2>⚠️ Manual Label Creation Required</h2>
+          </div>
+          <div class="content">
+            <div class="warning-box">
+              <p><strong>Country not supported for automatic label creation:</strong></p>
+              <p><strong>${countryName} (${countryCode})</strong></p>
+              <p>You do not prepay customs duties for this country.</p>
+            </div>
+
+            <h3>Order Information:</h3>
+            <div class="info">
+              <p><span class="label">Order Name:</span> ${orderName}</p>
+              <p><span class="label">Order Number:</span> ${orderNumber}</p>
+              <p><span class="label">Destination:</span> ${countryName} (${countryCode})</p>
+              ${tracking ? `<p><span class="label">Tracking:</span> ${tracking}</p>` : ''}
+            </div>
+
+            <div class="action-box">
+              <h3>📋 Action Required:</h3>
+              <ol>
+                <li><strong>Create label manually</strong> using your alternative shipping tool</li>
+                <li><strong>Add tracking number</strong> to the Shopify order</li>
+                <li><strong>Add tag</strong> <code>RM-DOG</code> or <code>MI-DOG</code> to generate customs declaration</li>
+              </ol>
+            </div>
+
+            ${driveUrl ? `
+            <div class="info">
+              <p><span class="label">✅ Customs Declaration:</span></p>
+              <p><a href="${driveUrl}" style="color: #2196f3; text-decoration: none;">📄 View Customs Document on Google Drive</a></p>
+              <p style="font-size: 12px; color: #666;">The customs declaration has been pre-generated for your convenience.</p>
+            </div>
+            ` : ''}
+
+            <p style="margin-top: 20px; color: #666; font-size: 14px;">
+              <strong>Note:</strong> Orders are auto-processed only for USA (prepaid customs) and EU (no customs required).
+            </p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  try {
+    const result = await resend.emails.send({
+      from: 'Shipping Alerts <onboarding@resend.dev>',
+      to: alertEmail,
+      subject: subject,
+      html: htmlContent,
+    });
+
+    console.log(`[Email Alert] Sent unsupported country alert for order ${orderName}:`, result);
+  } catch (emailError) {
+    console.error('[Email Alert] Failed to send email:', emailError);
+  }
+}
+
+/**
  * Send a success notification email (optional)
  * @param orderName - Order name
  * @param tracking - Tracking number
