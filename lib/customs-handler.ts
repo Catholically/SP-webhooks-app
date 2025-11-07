@@ -7,7 +7,7 @@ import { requiresCustomsDeclaration, isUSA, isEUCountry, canAutoProcessLabel } f
 import { fetchOrderCustomsData } from './shopify-customs';
 import { createCustomsDeclarationFromOrder } from './customs-pdf';
 import { uploadToGoogleDrive } from './google-drive';
-import { sendCustomsErrorAlert, sendUnsupportedCountryAlert } from './email-alerts';
+import { sendCustomsErrorAlert } from './email-alerts';
 
 interface OrderShippingInfo {
   countryCode: string;
@@ -210,13 +210,6 @@ export async function handleCustomsDeclaration(
 
     console.log(`[Customs] Country ${shippingInfo.countryCode} requires customs declaration`);
 
-    // Step 2b: Check if country is supported for auto-processing (USA or EU)
-    const isAutoProcessable = canAutoProcessLabel(shippingInfo.countryCode);
-    if (!isAutoProcessable) {
-      console.warn(`[Customs] ⚠️  Country ${shippingInfo.countryCode} NOT supported for auto-label creation (not USA/EU)`);
-      console.log(`[Customs] Will generate customs doc and send alert email`);
-    }
-
     // Step 3: Fetch product customs data from Shopify
     console.log('[Customs] Fetching product customs data...');
     const orderData = await fetchOrderCustomsData(orderId);
@@ -254,20 +247,6 @@ export async function handleCustomsDeclaration(
     // Step 7: Update Shopify metafield custom.doganale
     console.log('[Customs] Updating Shopify metafield...');
     await updateCustomsMetafield(orderId, driveUrl);
-
-    // Step 8: Send alert if country is not USA or EU
-    if (!isAutoProcessable) {
-      console.log('[Customs] Sending unsupported country alert email...');
-      await sendUnsupportedCountryAlert(
-        orderName,
-        orderNumber,
-        shippingInfo.countryCode,
-        shippingInfo.countryName,
-        tracking,
-        driveUrl
-      );
-      console.log(`[Customs] ⚠️  Alert sent: Manual label required for ${shippingInfo.countryName}`);
-    }
 
     console.log(`[Customs] ✅ Customs declaration completed successfully for order ${orderName}`);
   } catch (error) {
