@@ -497,14 +497,14 @@ export async function generateCustomsDeclarationPDF(
     font: fontRegular,
     color: rgb(0, 0, 0),
   });
-  rowY -= 10; // Space after "Data" text
+  rowY -= 15; // Small space after "Data" text
 
-  // Leave 5 lines (50 pixels) for physical stamp
-  rowY -= 50;
-
-  // Signature #2 after first "Data" - smaller size, left aligned
+  // Signature #2 after first "Data" - smaller size, left aligned, close to Data
   const sig2Height = drawSignature(page, rowY, 100, true);
-  rowY -= Math.max(15, sig2Height + 5);
+  rowY -= sig2Height + 10; // Move past the signature
+
+  // Leave space (60 pixels) for physical stamp AFTER signature
+  rowY -= 60;
 
   // Final paragraph
   const finalParagraph = 'Con la presente, inoltre, conferiamo mandato alla societa di richiedere alla Dogana di competenza, qualora previsto dagli accordi doganali vigenti, il rilascio del certificato di circolazione delle merci EUR.1 (ovvero EUR-MED) / A.TR. e a sottoscriverlo per nostro conto. Si dichiara che le merci riferite alla presente fattura sono prodotte in Italia e/o nella Comunita e rispondono alle norme di origine preferenziale. Ci si impegna, inoltre, a fornire, in qualsiasi momento, tutte le informazioni e i documenti necessari ai fini del rilascio del certificato richiesto.';
@@ -535,13 +535,14 @@ export async function generateCustomsDeclarationPDF(
     font: fontRegular,
     color: rgb(0, 0, 0),
   });
-  rowY -= 10; // Space after "Data" text
+  rowY -= 15; // Small space after "Data" text
 
-  // Leave 5 lines (50 pixels) for physical stamp
-  rowY -= 50;
+  // Signature #3 after second "Data" - smaller size, left aligned, close to Data
+  const sig3Height = drawSignature(page, rowY, 100, true);
+  rowY -= sig3Height + 10; // Move past the signature
 
-  // Signature #3 after second "Data" - smaller size, left aligned
-  drawSignature(page, rowY, 100, true);
+  // Leave space (60 pixels) for physical stamp AFTER signature
+  rowY -= 60;
 
   // Serialize the PDF to bytes
   const pdfBytes = await pdfDoc.save();
