@@ -11,6 +11,7 @@ const env = (k: string, def?: string) => {
 
 // SpedirePro envs (support legacy names)
 const SPRO_API_KEY = first(env("SPRO_API_KEY"), env("SPRO_API_TOKEN"));
+const SPRO_API_KEY_NODDP = env("SPRO_API_KEY_NODDP"); // Secondary account for NO-DDP shipments
 const SPRO_API_BASE = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
 
 // Multiple senders configuration (hardcoded)
@@ -248,7 +249,7 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "no order name" });
   }
 
-  // Detect CREATE tag (MI-CREATE, RM-CREATE, MI-CREATE-NOD, RM-CREATE-NOD, etc.) and extract sender code
+  // Detect CREATE tag (MI-CREATE, RM-CREATE, MI-CREATE-NOD, RM-CREATE-NOD, MI-NODDP, RM-NODDP, etc.) and extract sender code
   const tags = (order.tags || "")
     .split(",")
     .map(s => s.trim().toUpperCase());
@@ -258,16 +259,31 @@ export async function POST(req: Request) {
   let senderCode: string | null = null;
   let usedTag: string | null = null;
   let skipCustoms = false; // Flag for -NOD (No Doganale) tags
+  let useNoDDPAccount = false; // Flag for -NODDP tags (secondary account)
 
   for (const tag of tags) {
+    // Check for -NODDP tags (use secondary account, client pays customs)
+    if (tag.endsWith("-NODDP")) {
+      const code = tag.replace("-NODDP", "");
+      console.log(`Found NODDP tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipCustoms = false; // Still generate customs declaration!
+        useNoDDPAccount = true; // Use secondary API key
+        console.log(`Matched sender: ${senderCode} (NO-DDP account, customs: true)`);
+        break;
+      }
+    }
     // Check for -CREATE-NOD tags (create label but skip customs)
-    if (tag.endsWith("-CREATE-NOD")) {
+    else if (tag.endsWith("-CREATE-NOD")) {
       const code = tag.replace("-CREATE-NOD", "");
       console.log(`Found CREATE-NOD tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
       if (SENDERS[code as keyof typeof SENDERS]) {
         senderCode = code;
         usedTag = tag;
         skipCustoms = true;
+        useNoDDPAccount = false; // Use primary account
         console.log(`Matched sender: ${senderCode} (skip customs: true)`);
         break;
       }
@@ -280,6 +296,7 @@ export async function POST(req: Request) {
         senderCode = code;
         usedTag = tag;
         skipCustoms = false;
+        useNoDDPAccount = false; // Use primary account
         console.log(`Matched sender: ${senderCode} (skip customs: false)`);
         break;
       } else {
@@ -371,14 +388,20 @@ export async function POST(req: Request) {
   if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
   else sproBody.courier_fallback = true;
 
-  if (!SPRO_API_KEY) {
-    return json(500, { ok: false, error: "missing SPRO_API_KEY/SPRO_API_TOKEN" });
+  // Select correct API key based on account type
+  const apiKey = useNoDDPAccount ? SPRO_API_KEY_NODDP : SPRO_API_KEY;
+  const accountType = useNoDDPAccount ? "NO-DDP (secondary)" : "DDP (primary)";
+
+  if (!apiKey) {
+    return json(500, { ok: false, error: `missing API key for ${accountType} account` });
   }
+
+  console.log(`Using ${accountType} account for label creation`);
 
   const r = await fetch(`${SPRO_API_BASE}/create-label`, {
     method: "POST",
     headers: {
-      "X-Api-Key": SPRO_API_KEY,
+      "X-Api-Key": apiKey,
       "Content-Type": "application/json",
       "Accept": "application/json",
     },
@@ -399,6 +422,18 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
+  }
+
+  // If MI-CREATE or MI-CREATE-NOD tag was used, set metafield to send label email
+  if (senderCode === "MI") {
+    try {
+      console.log(`Setting label_email_recipient metafield for order ${order.id}`);
+      await setOrderMetafield(order.id, "spedirepro", "label_email_recipient", "denticristina@gmail.com");
+      console.log(`✅ label_email_recipient metafield set successfully`);
+    } catch (error) {
+      console.error("Failed to set label_email_recipient metafield:", error);
+      // Don't fail the whole request if metafield set fails
+    }
   }
 
   // If -NOD tag was used, set metafield to skip automatic customs generation

@@ -300,20 +300,20 @@ export async function POST(req: Request) {
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
-  // Check if order has MI-CREATE tag and send label email with PDF attachment
+  // Check if order needs label email sent (set by MI-CREATE or MI-CREATE-NOD tags)
   if (permanentLabelUrl) {
     try {
-      const tags = await getOrderTags(orderGid);
-      console.log("[Label Email] Order tags:", tags);
+      const emailRecipient = await getOrderMetafield(orderGid, "spedirepro", "label_email_recipient");
+      console.log("[Label Email] Email recipient metafield:", emailRecipient);
 
-      if (tags.includes("MI-CREATE")) {
-        console.log("[Label Email] MI-CREATE tag found, sending label email with PDF attachment");
+      if (emailRecipient) {
+        console.log(`[Label Email] Sending label email to ${emailRecipient} with PDF attachment`);
         await sendLabelEmail(merchantRef, permanentLabelUrl);
       } else {
-        console.log("[Label Email] No MI-CREATE tag, skipping label email");
+        console.log("[Label Email] No email recipient set, skipping label email");
       }
     } catch (err) {
-      console.error("[Label Email] Error checking tags or sending email:", err);
+      console.error("[Label Email] Error checking metafield or sending email:", err);
       // Don't fail the webhook - just log the error
     }
   }
