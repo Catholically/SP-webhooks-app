@@ -129,7 +129,45 @@ function getItalianProvinceFromCAP(cap: string): string | null {
   return capMap[prefix] || null;
 }
 
-// Shopify API helper
+// Shopify API helper - Set metafield
+async function setOrderMetafield(orderId: number, namespace: string, key: string, value: string, type: string = "single_line_text_field") {
+  const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+  const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+  const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+  const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+  const orderGid = `gid://shopify/Order/${orderId}`;
+
+  const query = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields { key value }
+        userErrors { field message }
+      }
+    }`;
+
+  await fetch(`${adminUrl}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      variables: {
+        metafields: [{
+          ownerId: orderGid,
+          namespace,
+          key,
+          type,
+          value,
+        }],
+      },
+    }),
+  });
+}
+
+// Shopify API helper - Update tags
 async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAdd: string[]) {
   const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
   const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
@@ -210,7 +248,7 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "no order name" });
   }
 
-  // Detect CREATE tag (MI-CREATE, RM-CREATE, etc.) and extract sender code
+  // Detect CREATE tag (MI-CREATE, RM-CREATE, MI-CREATE-NOD, RM-CREATE-NOD, etc.) and extract sender code
   const tags = (order.tags || "")
     .split(",")
     .map(s => s.trim().toUpperCase());
@@ -219,15 +257,30 @@ export async function POST(req: Request) {
 
   let senderCode: string | null = null;
   let usedTag: string | null = null;
+  let skipCustoms = false; // Flag for -NOD (No Doganale) tags
 
   for (const tag of tags) {
-    if (tag.endsWith("-CREATE")) {
+    // Check for -CREATE-NOD tags (create label but skip customs)
+    if (tag.endsWith("-CREATE-NOD")) {
+      const code = tag.replace("-CREATE-NOD", "");
+      console.log(`Found CREATE-NOD tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipCustoms = true;
+        console.log(`Matched sender: ${senderCode} (skip customs: true)`);
+        break;
+      }
+    }
+    // Check for regular -CREATE tags
+    else if (tag.endsWith("-CREATE")) {
       const code = tag.replace("-CREATE", "");
       console.log(`Found CREATE tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
       if (SENDERS[code as keyof typeof SENDERS]) {
         senderCode = code;
         usedTag = tag;
-        console.log(`Matched sender: ${senderCode}`);
+        skipCustoms = false;
+        console.log(`Matched sender: ${senderCode} (skip customs: false)`);
         break;
       } else {
         console.log(`No sender found for code: ${code}`);
@@ -346,6 +399,18 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
+  }
+
+  // If -NOD tag was used, set metafield to skip automatic customs generation
+  if (skipCustoms) {
+    try {
+      console.log(`Setting skip_customs_auto metafield for order ${order.id}`);
+      await setOrderMetafield(order.id, "spedirepro", "skip_customs_auto", "true");
+      console.log(`✅ skip_customs_auto metafield set successfully`);
+    } catch (error) {
+      console.error("Failed to set skip_customs_auto metafield:", error);
+      // Don't fail the whole request if metafield set fails
+    }
   }
 
   return json(200, { ok: true, create_label_response: text });

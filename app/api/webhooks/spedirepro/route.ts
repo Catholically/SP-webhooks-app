@@ -138,6 +138,23 @@ async function getOrderTags(orderGid: string): Promise<string[]> {
   return Array.isArray(tags) ? tags : [];
 }
 
+async function getOrderMetafield(orderGid: string, namespace: string, key: string): Promise<string | null> {
+  const q = `
+    query($id: ID!, $namespace: String!, $key: String!) {
+      order(id: $id) {
+        metafield(namespace: $namespace, key: $key) {
+          value
+        }
+      }
+    }`;
+  const r = await shopifyFetch("/graphql.json", {
+    method: "POST",
+    body: JSON.stringify({ query: q, variables: { id: orderGid, namespace, key } }),
+  });
+  const jsonData = await r.json();
+  return jsonData?.data?.order?.metafield?.value || null;
+}
+
 async function fulfill(foId: string, tracking: string, trackingUrl?: string, company?: string) {
   const q = `
     mutation fulfill($fulfillmentOrderId: ID!, $trackingInfo: FulfillmentTrackingInput) {
@@ -323,11 +340,19 @@ export async function POST(req: Request) {
   // This will check if destination is extra-EU and generate customs docs if needed
   const reference = body?.reference || "";
   if (reference) {
-    try {
-      await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference);
-    } catch (err) {
-      console.error('[Webhook] Error in customs processing:', err);
-      // Don't fail the webhook - just log the error
+    // Check if order has skip_customs_auto metafield (set by -NOD tags)
+    const skipCustomsAuto = await getOrderMetafield(orderGid, "spedirepro", "skip_customs_auto");
+
+    if (skipCustomsAuto === "true") {
+      console.log(`[Customs] ⏭️ Skipping automatic customs generation for order ${merchantRef} (skip_customs_auto metafield set)`);
+      console.log('[Customs] User will manually generate customs declaration using RM-DOG or MI-DOG tag');
+    } else {
+      try {
+        await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference);
+      } catch (err) {
+        console.error('[Webhook] Error in customs processing:', err);
+        // Don't fail the webhook - just log the error
+      }
     }
   }
 
