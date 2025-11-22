@@ -189,12 +189,18 @@ async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: s
         subject: `Etichetta Spedizione - Ordine ${merchantRef}`,
         html: `
           <h2>Nuova Etichetta di Spedizione</h2>
+          <br>
           <p><strong>Order name:</strong> ${merchantRef}</p>
+          <br>
           <p><strong>Customer name:</strong> ${customerName}</p>
+          <br>
           <p><strong>Tracking Number:</strong> ${tracking}</p>
+          <br>
           <p><strong>Corriere:</strong> ${courier}</p>
           <br>
+          <br>
           <p>L'etichetta di spedizione è allegata a questa email in formato PDF.</p>
+          <br>
           <p style="color: #666; font-size: 14px;">Puoi stampare l'etichetta direttamente dall'allegato.</p>
         `,
         attachments: [
