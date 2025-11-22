@@ -14,6 +14,7 @@ const env = (k: string, def?: string) => {
 
 // SpedirePro envs (support legacy names)
 const SPRO_API_KEY = first(env("SPRO_API_KEY"), env("SPRO_API_TOKEN"));
+const SPRO_API_KEY_NODDP = env("SPRO_API_KEY_NODDP"); // DDU account for non-USA/EU
 const SPRO_API_BASE = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
 
 // Multiple senders configuration (hardcoded)
@@ -365,23 +366,55 @@ export async function POST(req: Request) {
   let senderCode: string | null = null;
   let usedTag: string | null = null;
   let skipAutoCustoms = false;
+  let isDDU = false; // Track if using DDU (non-DDP) account
 
   for (const tag of tags) {
-    // Check for -CREATE-NODOG tags (create label but skip auto customs)
-    if (tag.endsWith("-CREATE-NODOG")) {
+    // Check for -CREATE-DDU-NODOG tags (DDU account, no auto customs)
+    if (tag.endsWith("-CREATE-DDU-NODOG")) {
+      const code = tag.replace("-CREATE-DDU-NODOG", "");
+      console.log(`Found CREATE-DDU-NODOG tag: ${tag}, extracted code: ${code}`);
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipAutoCustoms = true;
+        isDDU = true;
+        console.log(`Matched sender: ${senderCode}, DDU account, will skip auto customs`);
+        break;
+      } else {
+        console.log(`No sender found for code: ${code}`);
+      }
+    }
+    // Check for -CREATE-DDU tags (DDU account + auto customs)
+    else if (tag.endsWith("-CREATE-DDU")) {
+      const code = tag.replace("-CREATE-DDU", "");
+      console.log(`Found CREATE-DDU tag: ${tag}, extracted code: ${code}`);
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipAutoCustoms = false;
+        isDDU = true;
+        console.log(`Matched sender: ${senderCode}, DDU account`);
+        break;
+      } else {
+        console.log(`No sender found for code: ${code}`);
+      }
+    }
+    // Check for -CREATE-NODOG tags (DDP account, no auto customs)
+    else if (tag.endsWith("-CREATE-NODOG")) {
       const code = tag.replace("-CREATE-NODOG", "");
       console.log(`Found CREATE-NODOG tag: ${tag}, extracted code: ${code}`);
       if (SENDERS[code as keyof typeof SENDERS]) {
         senderCode = code;
         usedTag = tag;
         skipAutoCustoms = true;
-        console.log(`Matched sender: ${senderCode}, will skip auto customs generation`);
+        isDDU = false;
+        console.log(`Matched sender: ${senderCode}, DDP account, will skip auto customs`);
         break;
       } else {
         console.log(`No sender found for code: ${code}`);
       }
     }
-    // Check for regular -CREATE tags (create label + auto customs)
+    // Check for regular -CREATE tags (DDP account + auto customs)
     else if (tag.endsWith("-CREATE")) {
       const code = tag.replace("-CREATE", "");
       console.log(`Found CREATE tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
@@ -389,7 +422,8 @@ export async function POST(req: Request) {
         senderCode = code;
         usedTag = tag;
         skipAutoCustoms = false;
-        console.log(`Matched sender: ${senderCode}`);
+        isDDU = false;
+        console.log(`Matched sender: ${senderCode}, DDP account`);
         break;
       } else {
         console.log(`No sender found for code: ${code}`);
@@ -419,34 +453,62 @@ export async function POST(req: Request) {
     return json(200, { ok: true, skipped: "missing shipping address fields" });
   }
 
-  // 🚨 COUNTRY CHECK: Block label creation for non-USA/EU countries
-  if (!canAutoProcessLabel(to.country_code)) {
-    console.warn(`⚠️ BLOCKED: Cannot create label with ${usedTag} for country ${to.country_code}`);
-    console.warn(`This tag can only be used for USA or EU countries`);
-    console.warn(`Please create the label manually and use ${senderCode}-DOG tag for customs docs`);
+  // 🚨 COUNTRY/ACCOUNT VALIDATION: Ensure correct tag is used for destination
+  const isUSAorEU = canAutoProcessLabel(to.country_code);
 
-    // Send alert email immediately
+  // Block DDP tags for non-USA/EU countries
+  if (!isDDU && !isUSAorEU) {
+    console.warn(`⚠️ BLOCKED: Cannot use DDP tag ${usedTag} for country ${to.country_code}`);
+    console.warn(`DDP tags (${usedTag}) can only be used for USA or EU countries`);
+    console.warn(`For ${to.country_code}, use DDU tag: ${senderCode}-CREATE-DDU`);
+
     await sendUnsupportedCountryAlert(
       order.name,
       order.name.replace('#', ''),
       to.country_code,
-      to.country_code, // Country name not available, use code
-      undefined, // No tracking yet
-      undefined  // No drive URL yet
+      to.country_code,
+      undefined,
+      undefined
     );
 
     return json(200, {
       ok: false,
       blocked: true,
-      reason: "unsupported-country-for-ddp-account",
-      message: `Cannot use ${usedTag} for ${to.country_code}. This tag is only for USA/EU. Please create label manually and use ${senderCode}-DOG for customs.`,
+      reason: "wrong-account-ddp-for-non-usa-eu",
+      message: `Cannot use DDP tag ${usedTag} for ${to.country_code}. Use ${senderCode}-CREATE-DDU instead.`,
       country: to.country_code,
       tag: usedTag,
-      suggestedTag: `${senderCode}-DOG`
+      suggestedTag: `${senderCode}-CREATE-DDU`
     });
   }
 
-  console.log(`✅ Country ${to.country_code} is supported for auto label creation (USA or EU)`);
+  // Block DDU tags for USA/EU countries
+  if (isDDU && isUSAorEU) {
+    console.warn(`⚠️ BLOCKED: Cannot use DDU tag ${usedTag} for country ${to.country_code}`);
+    console.warn(`DDU tags (${usedTag}) should NOT be used for USA or EU countries`);
+    console.warn(`For ${to.country_code}, use DDP tag: ${senderCode}-CREATE`);
+
+    await sendUnsupportedCountryAlert(
+      order.name,
+      order.name.replace('#', ''),
+      to.country_code,
+      to.country_code,
+      undefined,
+      undefined
+    );
+
+    return json(200, {
+      ok: false,
+      blocked: true,
+      reason: "wrong-account-ddu-for-usa-eu",
+      message: `Cannot use DDU tag ${usedTag} for ${to.country_code}. Use ${senderCode}-CREATE instead.`,
+      country: to.country_code,
+      tag: usedTag,
+      suggestedTag: `${senderCode}-CREATE`
+    });
+  }
+
+  console.log(`✅ Country ${to.country_code} validated for ${isDDU ? 'DDU' : 'DDP'} account`);
 
   const receiverPhone =
     first(to.phone, order.billing_address?.phone, "+15555555555") || "+15555555555";
@@ -509,14 +571,24 @@ export async function POST(req: Request) {
   if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
   else sproBody.courier_fallback = true;
 
-  if (!SPRO_API_KEY) {
-    return json(500, { ok: false, error: "missing SPRO_API_KEY/SPRO_API_TOKEN" });
+  // Select correct API key based on account type
+  const activeApiKey = isDDU ? SPRO_API_KEY_NODDP : SPRO_API_KEY;
+  const accountType = isDDU ? "DDU (NODDP)" : "DDP";
+
+  if (!activeApiKey) {
+    return json(500, {
+      ok: false,
+      error: `missing ${isDDU ? 'SPRO_API_KEY_NODDP' : 'SPRO_API_KEY/SPRO_API_TOKEN'}`,
+      accountType: accountType
+    });
   }
+
+  console.log(`Creating label on ${accountType} account for ${to.country_code}`);
 
   const r = await fetch(`${SPRO_API_BASE}/create-label`, {
     method: "POST",
     headers: {
-      "X-Api-Key": SPRO_API_KEY,
+      "X-Api-Key": activeApiKey,
       "Content-Type": "application/json",
       "Accept": "application/json",
     },
