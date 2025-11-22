@@ -1,4 +1,9 @@
-export const runtime = "edge";
+// Change runtime to nodejs to support googleapis and pdf-lib
+export const runtime = "nodejs";
+
+import { handleCustomsDeclaration } from '@/lib/customs-handler';
+import { sendLabelEmail } from '@/lib/email-label';
+import { downloadAndUploadToGoogleDrive } from '@/lib/google-drive';
 
 type SproWebhook = {
   update_type?: string;
@@ -14,6 +19,8 @@ type SproWebhook = {
   exception_status?: number;
   tracking_url?: string;
   label?: { link?: string; expire_at?: string };
+  price?: number;  // Shipping cost/price
+  cost?: number;   // Alternative field name
 };
 
 const json = (status: number, obj: unknown) =>
@@ -49,7 +56,53 @@ async function findOrderIdByName(nameRaw: string): Promise<string | null> {
   return id ? String(id) : null;
 }
 
-async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
+async function getOrderMetafield(orderGid: string, namespace: string, key: string): Promise<string | null> {
+  const q = `
+    query($id: ID!, $namespace: String!, $key: String!) {
+      order(id: $id) {
+        metafield(namespace: $namespace, key: $key) {
+          value
+        }
+      }
+    }`;
+  const r = await shopifyFetch("/graphql.json", {
+    method: "POST",
+    body: JSON.stringify({ query: q, variables: { id: orderGid, namespace, key } }),
+  });
+  const jsonData = await r.json();
+  return jsonData?.data?.order?.metafield?.value || null;
+}
+
+async function getOrderCustomerName(orderGid: string): Promise<string> {
+  const q = `
+    query($id: ID!) {
+      order(id: $id) {
+        customer {
+          displayName
+          firstName
+          lastName
+        }
+        shippingAddress {
+          name
+        }
+      }
+    }`;
+  const r = await shopifyFetch("/graphql.json", {
+    method: "POST",
+    body: JSON.stringify({ query: q, variables: { id: orderGid } }),
+  });
+  const jsonData = await r.json();
+  const customer = jsonData?.data?.order?.customer;
+  const shippingAddress = jsonData?.data?.order?.shippingAddress;
+
+  // Try to get customer name from different sources
+  return customer?.displayName ||
+         `${customer?.firstName || ''} ${customer?.lastName || ''}`.trim() ||
+         shippingAddress?.name ||
+         "Cliente";
+}
+
+async function metafieldsSet(orderGid: string, kv: Record<string, string>, reference?: string) {
   const entries = Object.entries(kv).map(([key, value]) => {
     // Determina il tipo corretto in base al campo
     let type = "single_line_text_field";
@@ -65,6 +118,17 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
       value,
     };
   });
+
+  // Add spro.reference metafield if reference is provided
+  if (reference) {
+    entries.push({
+      ownerId: orderGid,
+      namespace: "spro",
+      key: "reference",
+      type: "single_line_text_field",
+      value: reference,
+    });
+  }
 
   console.log("Setting metafields:", entries);
 
@@ -88,11 +152,19 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
   }
 }
 
-async function firstFO(orderGid: string): Promise<string | null> {
+async function getOpenFulfillmentOrder(orderGid: string): Promise<string | null> {
   const q = `
     query($id: ID!) {
       order(id: $id) {
-        fulfillmentOrders(first: 5) { nodes { id status } }
+        fulfillmentOrders(first: 10) {
+          nodes {
+            id
+            status
+            assignedLocation {
+              name
+            }
+          }
+        }
       }
     }`;
   const r = await shopifyFetch("/graphql.json", {
@@ -100,7 +172,25 @@ async function firstFO(orderGid: string): Promise<string | null> {
     body: JSON.stringify({ query: q, variables: { id: orderGid } }),
   });
   const jsonData = await r.json();
-  return jsonData?.data?.order?.fulfillmentOrders?.nodes?.[0]?.id || null;
+  const fulfillmentOrders = jsonData?.data?.order?.fulfillmentOrders?.nodes || [];
+
+  console.log("Available fulfillment orders:", fulfillmentOrders);
+
+  // First try to find an OPEN fulfillment order (not yet fulfilled)
+  const openFO = fulfillmentOrders.find((fo: any) => fo.status === "OPEN");
+  if (openFO) {
+    console.log("Found OPEN fulfillment order:", openFO.id, "Location:", openFO.assignedLocation?.name);
+    return openFO.id;
+  }
+
+  // Fallback to first available if no OPEN found
+  const firstFO = fulfillmentOrders[0];
+  if (firstFO) {
+    console.log("Using first fulfillment order:", firstFO.id, "Status:", firstFO.status);
+    return firstFO.id;
+  }
+
+  return null;
 }
 
 async function fulfill(foId: string, tracking: string, trackingUrl?: string, company?: string) {
@@ -172,24 +262,105 @@ export async function POST(req: Request) {
   }
   const orderGid = `gid://shopify/Order/${orderIdNum}`;
 
-  await metafieldsSet(orderGid, {
+  // Prepare metafields object
+  const metafields: Record<string, string> = {
     reference: body?.reference || "",
     order_ref: body?.order || "",
     tracking,
-    tracking_url: trackingUrl,
     label_url: labelUrl,
-    ldv_url: labelUrl,  // Aggiunto per compatibilità
+    ldv_url: labelUrl,  // Will be updated with Google Drive URL
     courier,  // Nome completo (es: "UPS STANDARD - PROMO")
     courier_group: courierGroup,  // Nome standard (es: "UPS")
-  });
+  };
+
+  // Only add tracking URL metafield if it has value
+  if (trackingUrl) metafields.tracking_url = trackingUrl;
+
+  // Add shipping price if available (try both 'price' and 'cost' fields)
+  const shippingPrice = body?.price ?? body?.cost;
+  if (shippingPrice !== undefined && shippingPrice !== null) {
+    metafields.shipping_price = String(shippingPrice);
+  }
+
+  // Download label from AWS and upload to Google Drive for permanent storage
+  let permanentLabelUrl = labelUrl; // Fallback to original URL
+  if (labelUrl) {
+    try {
+      console.log("[Label Storage] Downloading and uploading label to Google Drive...");
+      const orderNumber = merchantRef.replace('#', ''); // e.g., "35622182025"
+      permanentLabelUrl = await downloadAndUploadToGoogleDrive(labelUrl, orderNumber, 'label');
+      console.log("[Label Storage] ✅ Label stored on Google Drive:", permanentLabelUrl);
+
+      // Update metafields with permanent Google Drive URL
+      metafields.label_url = permanentLabelUrl;
+      metafields.ldv_url = permanentLabelUrl;  // Aggiunto per compatibilità
+    } catch (err) {
+      console.error("[Label Storage] ❌ Failed to upload label to Google Drive:", err);
+      // Fallback to AWS URL
+      metafields.label_url = labelUrl;
+      metafields.ldv_url = labelUrl;
+    }
+  }
+
+  await metafieldsSet(orderGid, metafields, body?.reference);
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
+  // Check if order needs label email sent (set by MI-CREATE or MI-CREATE-NOD tags)
+  if (permanentLabelUrl) {
+    try {
+      const emailRecipient = await getOrderMetafield(orderGid, "spedirepro", "label_email_recipient");
+      console.log("[Label Email] Email recipient metafield:", emailRecipient);
+
+      if (emailRecipient) {
+        console.log(`[Label Email] Sending label email to ${emailRecipient} with PDF attachment`);
+        await sendLabelEmail(merchantRef, permanentLabelUrl, emailRecipient);
+      } else {
+        console.log("[Label Email] No email recipient set, skipping label email");
+      }
+    } catch (err) {
+      console.error("[Label Email] Error checking metafield or sending email:", err);
+      // Don't fail the webhook - just log the error
+    }
+  }
+
   // Auto-fulfill the order with tracking information
+  // Cerca il primo fulfillment order OPEN (per gestire ordini multi-location)
   // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")
-  const foId = await firstFO(orderGid);
+  console.log("[DEBUG] Looking for fulfillment order...");
+  const foId = await getOpenFulfillmentOrder(orderGid);
+  console.log("[DEBUG] Fulfillment Order ID found:", foId);
+
   if (foId) {
-    await fulfill(foId, tracking, trackingUrl, courierGroup);
+    console.log("[DEBUG] Starting fulfillment with tracking:", tracking);
+    try {
+      await fulfill(foId, tracking, trackingUrl, courierGroup);
+      console.log("[DEBUG] ✅ Fulfillment completed successfully");
+    } catch (err) {
+      console.error("[DEBUG] ❌ Fulfillment error:", err);
+    }
+  } else {
+    console.log("[DEBUG] ⚠️ No fulfillment order found - skipping fulfillment");
+  }
+
+  // Process customs declaration (await to ensure it completes)
+  // This will check if destination is extra-EU and generate customs docs if needed
+  const reference = body?.reference || "";
+  if (reference) {
+    // Check if order has skip_customs_auto metafield (set by -NOD tags)
+    const skipCustomsAuto = await getOrderMetafield(orderGid, "spedirepro", "skip_customs_auto");
+
+    if (skipCustomsAuto === "true") {
+      console.log(`[Customs] ⏭️ Skipping automatic customs generation for order ${merchantRef} (skip_customs_auto metafield set)`);
+      console.log('[Customs] User will manually generate customs declaration using RM-DOG or MI-DOG tag');
+    } else {
+      try {
+        await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference);
+      } catch (err) {
+        console.error('[Webhook] Error in customs processing:', err);
+        // Don't fail the webhook - just log the error
+      }
+    }
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });

@@ -1,4 +1,7 @@
-export const runtime = "edge";
+export const runtime = "nodejs";
+
+import { canAutoProcessLabel } from '@/lib/eu-countries';
+import { sendUnsupportedCountryAlert } from '@/lib/email-alerts';
 
 // ---------- utils & env compat ----------
 const first = (...vals: (string | undefined | null)[]) =>
@@ -11,6 +14,7 @@ const env = (k: string, def?: string) => {
 
 // SpedirePro envs (support legacy names)
 const SPRO_API_KEY = first(env("SPRO_API_KEY"), env("SPRO_API_TOKEN"));
+const SPRO_API_KEY_NODDP = env("SPRO_API_KEY_NODDP"); // DDU account for non-USA/EU
 const SPRO_API_BASE = env("SPRO_API_BASE", "https://www.spedirepro.com/public-api/v1");
 
 // Multiple senders configuration (hardcoded)
@@ -181,6 +185,52 @@ async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAd
   }
 }
 
+// Set metafield on order to trigger email sending
+async function setOrderMetafield(orderId: number, namespace: string, key: string, value: string) {
+  const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+  const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+  const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+  const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+  const orderGid = `gid://shopify/Order/${orderId}`;
+
+  const metafieldMutation = `
+    mutation setMetafield($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          namespace
+          key
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }`;
+
+  await fetch(`${adminUrl}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: metafieldMutation,
+      variables: {
+        metafields: [{
+          ownerId: orderGid,
+          namespace: namespace,
+          key: key,
+          value: value,
+          type: "single_line_text_field"
+        }]
+      },
+    }),
+  });
+}
+
 export async function POST(req: Request) {
   const url = new URL(req.url);
   const debug = url.searchParams.get("debug") === "1";
@@ -217,17 +267,163 @@ export async function POST(req: Request) {
 
   console.log("Orders-updated webhook - Order:", order.name, "Tags:", tags);
 
+  // 📄 CHECK FOR DOG TAGS (MI-DOG, RM-DOG) - Generate customs docs only
+  for (const tag of tags) {
+    if (tag.endsWith("-DOG")) {
+      const code = tag.replace("-DOG", "");
+      console.log(`Found DOG tag: ${tag}, extracted code: ${code}`);
+
+      if (!SENDERS[code as keyof typeof SENDERS]) {
+        console.log(`No sender found for code: ${code}, skipping`);
+        continue;
+      }
+
+      console.log(`🔧 Processing DOG tag for order ${order.name}`);
+
+      // Check if order already has tracking (required for DOG tags)
+      // We'll fetch this from Shopify metafields
+      const orderIdStr = String(order.id);
+      const orderGid = `gid://shopify/Order/${orderIdStr}`;
+
+      // Import needed function at runtime
+      const { handleCustomsDeclaration } = await import('@/lib/customs-handler');
+
+      try {
+        // Fetch tracking from metafields
+        const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+        const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+        const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+        const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+        const metafieldQuery = `
+          query getTracking($id: ID!) {
+            order(id: $id) {
+              metafield(namespace: "spedirepro", key: "tracking") {
+                value
+              }
+              referenceMetafield: metafield(namespace: "spro", key: "reference") {
+                value
+              }
+            }
+          }`;
+
+        const metaResp = await fetch(`${adminUrl}/graphql.json`, {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": token,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            query: metafieldQuery,
+            variables: { id: orderGid },
+          }),
+        });
+
+        const metaData = await metaResp.json();
+        const tracking = metaData?.data?.order?.metafield?.value;
+        const reference = metaData?.data?.order?.referenceMetafield?.value;
+
+        if (!tracking || !reference) {
+          console.error(`❌ Cannot process ${tag}: Missing tracking (${tracking}) or reference (${reference})`);
+          return json(200, {
+            ok: false,
+            error: "missing-tracking-or-reference",
+            message: `Cannot generate customs docs: tracking or SpedirePro reference not found. Please ensure label was created first.`,
+            tag: tag,
+          });
+        }
+
+        console.log(`✅ Found tracking: ${tracking}, reference: ${reference}`);
+        console.log(`Generating customs declaration for ${tag}...`);
+
+        // Generate customs declaration
+        await handleCustomsDeclaration(orderIdStr, order.name, tracking, reference);
+
+        // Update tags: remove DOG tag, add DOG-DONE
+        await updateOrderTags(order.id, [tag], [`${code}-DOG-DONE`]);
+
+        console.log(`✅ Customs declaration generated successfully for ${order.name}`);
+
+        return json(200, {
+          ok: true,
+          action: "customs-generated",
+          tag: tag,
+          order: order.name,
+          tracking,
+        });
+      } catch (error) {
+        console.error(`❌ Error processing ${tag}:`, error);
+        return json(200, {
+          ok: false,
+          error: "customs-generation-failed",
+          message: error instanceof Error ? error.message : String(error),
+          tag: tag,
+        });
+      }
+    }
+  }
+
   let senderCode: string | null = null;
   let usedTag: string | null = null;
+  let skipAutoCustoms = false;
+  let isDDU = false; // Track if using DDU (non-DDP) account
 
   for (const tag of tags) {
-    if (tag.endsWith("-CREATE")) {
+    // Check for -CREATE-DDU-NODOG tags (DDU account, no auto customs)
+    if (tag.endsWith("-CREATE-DDU-NODOG")) {
+      const code = tag.replace("-CREATE-DDU-NODOG", "");
+      console.log(`Found CREATE-DDU-NODOG tag: ${tag}, extracted code: ${code}`);
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipAutoCustoms = true;
+        isDDU = true;
+        console.log(`Matched sender: ${senderCode}, DDU account, will skip auto customs`);
+        break;
+      } else {
+        console.log(`No sender found for code: ${code}`);
+      }
+    }
+    // Check for -CREATE-DDU tags (DDU account + auto customs)
+    else if (tag.endsWith("-CREATE-DDU")) {
+      const code = tag.replace("-CREATE-DDU", "");
+      console.log(`Found CREATE-DDU tag: ${tag}, extracted code: ${code}`);
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipAutoCustoms = false;
+        isDDU = true;
+        console.log(`Matched sender: ${senderCode}, DDU account`);
+        break;
+      } else {
+        console.log(`No sender found for code: ${code}`);
+      }
+    }
+    // Check for -CREATE-NODOG tags (DDP account, no auto customs)
+    else if (tag.endsWith("-CREATE-NODOG")) {
+      const code = tag.replace("-CREATE-NODOG", "");
+      console.log(`Found CREATE-NODOG tag: ${tag}, extracted code: ${code}`);
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipAutoCustoms = true;
+        isDDU = false;
+        console.log(`Matched sender: ${senderCode}, DDP account, will skip auto customs`);
+        break;
+      } else {
+        console.log(`No sender found for code: ${code}`);
+      }
+    }
+    // Check for regular -CREATE tags (DDP account + auto customs)
+    else if (tag.endsWith("-CREATE")) {
       const code = tag.replace("-CREATE", "");
       console.log(`Found CREATE tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
       if (SENDERS[code as keyof typeof SENDERS]) {
         senderCode = code;
         usedTag = tag;
-        console.log(`Matched sender: ${senderCode}`);
+        skipAutoCustoms = false;
+        isDDU = false;
+        console.log(`Matched sender: ${senderCode}, DDP account`);
         break;
       } else {
         console.log(`No sender found for code: ${code}`);
@@ -256,6 +452,63 @@ export async function POST(req: Request) {
   if (!to?.country_code || !to?.address1 || !to?.zip || !to?.city) {
     return json(200, { ok: true, skipped: "missing shipping address fields" });
   }
+
+  // 🚨 COUNTRY/ACCOUNT VALIDATION: Ensure correct tag is used for destination
+  const isUSAorEU = canAutoProcessLabel(to.country_code);
+
+  // Block DDP tags for non-USA/EU countries
+  if (!isDDU && !isUSAorEU) {
+    console.warn(`⚠️ BLOCKED: Cannot use DDP tag ${usedTag} for country ${to.country_code}`);
+    console.warn(`DDP tags (${usedTag}) can only be used for USA or EU countries`);
+    console.warn(`For ${to.country_code}, use DDU tag: ${senderCode}-CREATE-DDU`);
+
+    await sendUnsupportedCountryAlert(
+      order.name,
+      order.name.replace('#', ''),
+      to.country_code,
+      to.country_code,
+      undefined,
+      undefined
+    );
+
+    return json(200, {
+      ok: false,
+      blocked: true,
+      reason: "wrong-account-ddp-for-non-usa-eu",
+      message: `Cannot use DDP tag ${usedTag} for ${to.country_code}. Use ${senderCode}-CREATE-DDU instead.`,
+      country: to.country_code,
+      tag: usedTag,
+      suggestedTag: `${senderCode}-CREATE-DDU`
+    });
+  }
+
+  // Block DDU tags for USA/EU countries
+  if (isDDU && isUSAorEU) {
+    console.warn(`⚠️ BLOCKED: Cannot use DDU tag ${usedTag} for country ${to.country_code}`);
+    console.warn(`DDU tags (${usedTag}) should NOT be used for USA or EU countries`);
+    console.warn(`For ${to.country_code}, use DDP tag: ${senderCode}-CREATE`);
+
+    await sendUnsupportedCountryAlert(
+      order.name,
+      order.name.replace('#', ''),
+      to.country_code,
+      to.country_code,
+      undefined,
+      undefined
+    );
+
+    return json(200, {
+      ok: false,
+      blocked: true,
+      reason: "wrong-account-ddu-for-usa-eu",
+      message: `Cannot use DDU tag ${usedTag} for ${to.country_code}. Use ${senderCode}-CREATE instead.`,
+      country: to.country_code,
+      tag: usedTag,
+      suggestedTag: `${senderCode}-CREATE`
+    });
+  }
+
+  console.log(`✅ Country ${to.country_code} validated for ${isDDU ? 'DDU' : 'DDP'} account`);
 
   const receiverPhone =
     first(to.phone, order.billing_address?.phone, "+15555555555") || "+15555555555";
@@ -318,14 +571,24 @@ export async function POST(req: Request) {
   if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
   else sproBody.courier_fallback = true;
 
-  if (!SPRO_API_KEY) {
-    return json(500, { ok: false, error: "missing SPRO_API_KEY/SPRO_API_TOKEN" });
+  // Select correct API key based on account type
+  const activeApiKey = isDDU ? SPRO_API_KEY_NODDP : SPRO_API_KEY;
+  const accountType = isDDU ? "DDU (NODDP)" : "DDP";
+
+  if (!activeApiKey) {
+    return json(500, {
+      ok: false,
+      error: `missing ${isDDU ? 'SPRO_API_KEY_NODDP' : 'SPRO_API_KEY/SPRO_API_TOKEN'}`,
+      accountType: accountType
+    });
   }
+
+  console.log(`Creating label on ${accountType} account for ${to.country_code}`);
 
   const r = await fetch(`${SPRO_API_BASE}/create-label`, {
     method: "POST",
     headers: {
-      "X-Api-Key": SPRO_API_KEY,
+      "X-Api-Key": activeApiKey,
       "Content-Type": "application/json",
       "Accept": "application/json",
     },
@@ -346,6 +609,30 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
+  }
+
+  // For MI orders, set metafield to trigger email sending
+  if (senderCode === "MI") {
+    try {
+      console.log(`Setting email recipient metafield for MI order ${order.name}`);
+      await setOrderMetafield(order.id, "spedirepro", "label_email_recipient", "denticristina@gmail.com");
+      console.log(`✅ Email recipient metafield set successfully`);
+    } catch (error) {
+      console.error("Failed to set email recipient metafield:", error);
+      // Don't fail the whole request if metafield set fails
+    }
+  }
+
+  // If NODOG tag was used, set metafield to skip automatic customs generation
+  if (skipAutoCustoms) {
+    try {
+      console.log(`Setting skip_customs_auto metafield for order ${order.name} (NODOG tag used)`);
+      await setOrderMetafield(order.id, "spedirepro", "skip_customs_auto", "true");
+      console.log(`✅ Skip customs metafield set - doganale will NOT be generated automatically`);
+    } catch (error) {
+      console.error("Failed to set skip_customs_auto metafield:", error);
+      // Don't fail the whole request if metafield set fails
+    }
   }
 
   return json(200, { ok: true, create_label_response: text });
