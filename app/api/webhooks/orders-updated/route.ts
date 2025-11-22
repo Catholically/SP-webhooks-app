@@ -364,14 +364,31 @@ export async function POST(req: Request) {
 
   let senderCode: string | null = null;
   let usedTag: string | null = null;
+  let skipAutoCustoms = false;
 
   for (const tag of tags) {
-    if (tag.endsWith("-CREATE")) {
+    // Check for -CREATE-NODOG tags (create label but skip auto customs)
+    if (tag.endsWith("-CREATE-NODOG")) {
+      const code = tag.replace("-CREATE-NODOG", "");
+      console.log(`Found CREATE-NODOG tag: ${tag}, extracted code: ${code}`);
+      if (SENDERS[code as keyof typeof SENDERS]) {
+        senderCode = code;
+        usedTag = tag;
+        skipAutoCustoms = true;
+        console.log(`Matched sender: ${senderCode}, will skip auto customs generation`);
+        break;
+      } else {
+        console.log(`No sender found for code: ${code}`);
+      }
+    }
+    // Check for regular -CREATE tags (create label + auto customs)
+    else if (tag.endsWith("-CREATE")) {
       const code = tag.replace("-CREATE", "");
       console.log(`Found CREATE tag: ${tag}, extracted code: ${code}, available senders:`, Object.keys(SENDERS));
       if (SENDERS[code as keyof typeof SENDERS]) {
         senderCode = code;
         usedTag = tag;
+        skipAutoCustoms = false;
         console.log(`Matched sender: ${senderCode}`);
         break;
       } else {
@@ -530,6 +547,18 @@ export async function POST(req: Request) {
       console.log(`✅ Email recipient metafield set successfully`);
     } catch (error) {
       console.error("Failed to set email recipient metafield:", error);
+      // Don't fail the whole request if metafield set fails
+    }
+  }
+
+  // If NODOG tag was used, set metafield to skip automatic customs generation
+  if (skipAutoCustoms) {
+    try {
+      console.log(`Setting skip_customs_auto metafield for order ${order.name} (NODOG tag used)`);
+      await setOrderMetafield(order.id, "spedirepro", "skip_customs_auto", "true");
+      console.log(`✅ Skip customs metafield set - doganale will NOT be generated automatically`);
+    } catch (error) {
+      console.error("Failed to set skip_customs_auto metafield:", error);
       // Don't fail the whole request if metafield set fails
     }
   }
