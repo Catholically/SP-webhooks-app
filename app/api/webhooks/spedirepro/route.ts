@@ -117,11 +117,19 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
   }
 }
 
-async function firstFO(orderGid: string): Promise<string | null> {
+async function getOpenFulfillmentOrder(orderGid: string): Promise<string | null> {
   const q = `
     query($id: ID!) {
       order(id: $id) {
-        fulfillmentOrders(first: 5) { nodes { id status } }
+        fulfillmentOrders(first: 10) {
+          nodes {
+            id
+            status
+            assignedLocation {
+              name
+            }
+          }
+        }
       }
     }`;
   const r = await shopifyFetch("/graphql.json", {
@@ -129,7 +137,25 @@ async function firstFO(orderGid: string): Promise<string | null> {
     body: JSON.stringify({ query: q, variables: { id: orderGid } }),
   });
   const jsonData = await r.json();
-  return jsonData?.data?.order?.fulfillmentOrders?.nodes?.[0]?.id || null;
+  const fulfillmentOrders = jsonData?.data?.order?.fulfillmentOrders?.nodes || [];
+
+  console.log("Available fulfillment orders:", fulfillmentOrders);
+
+  // First try to find an OPEN fulfillment order (not yet fulfilled)
+  const openFO = fulfillmentOrders.find((fo: any) => fo.status === "OPEN");
+  if (openFO) {
+    console.log("Found OPEN fulfillment order:", openFO.id, "Location:", openFO.assignedLocation?.name);
+    return openFO.id;
+  }
+
+  // Fallback to first available if no OPEN found
+  const firstFO = fulfillmentOrders[0];
+  if (firstFO) {
+    console.log("Using first fulfillment order:", firstFO.id, "Status:", firstFO.status);
+    return firstFO.id;
+  }
+
+  return null;
 }
 
 async function fulfill(foId: string, tracking: string, trackingUrl?: string, company?: string) {
@@ -284,10 +310,14 @@ export async function POST(req: Request) {
   console.log("Metafields set successfully for order:", orderIdNum);
 
   // Auto-fulfill the order with tracking information
+  // Cerca il primo fulfillment order OPEN (per gestire ordini multi-location)
   // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")
-  const foId = await firstFO(orderGid);
+  const foId = await getOpenFulfillmentOrder(orderGid);
   if (foId) {
+    console.log("Fulfilling order with tracking:", tracking, "FO:", foId);
     await fulfill(foId, tracking, trackingUrl, courierGroup);
+  } else {
+    console.log("No open fulfillment order found for tracking:", tracking);
   }
 
   // Send email with label to denticristina@gmail.com
