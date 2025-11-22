@@ -184,7 +184,7 @@ async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: s
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "robykz@gmail.com",
+        from: "Holy Trove <noreply@resend.catholically.com>",
         to: ["denticristina@gmail.com"],
         subject: `Etichetta Spedizione - Ordine ${merchantRef}`,
         html: `
