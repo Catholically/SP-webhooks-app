@@ -314,7 +314,7 @@ export async function POST(req: Request) {
 
       if (emailRecipient) {
         console.log(`[Label Email] Sending label email to ${emailRecipient} with PDF attachment`);
-        await sendLabelEmail(merchantRef, permanentLabelUrl);
+        await sendLabelEmail(merchantRef, permanentLabelUrl, emailRecipient);
       } else {
         console.log("[Label Email] No email recipient set, skipping label email");
       }

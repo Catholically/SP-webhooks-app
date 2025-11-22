@@ -4,11 +4,13 @@ import { getResendClient } from './email-alerts';
  * Send shipping label email for MI-CREATE orders with PDF attachment
  * @param orderName - Order name/ID (e.g., #35622182025)
  * @param labelUrl - Google Drive URL to the shipping label PDF
+ * @param recipient - Email address to send the label to (default: denticristina@gmail.com)
  * @returns Success status
  */
 export async function sendLabelEmail(
   orderName: string,
-  labelUrl: string
+  labelUrl: string,
+  recipient: string = 'denticristina@gmail.com'
 ): Promise<boolean> {
   const resend = getResendClient();
   if (!resend) {
@@ -16,8 +18,7 @@ export async function sendLabelEmail(
     return false;
   }
 
-  const recipient = 'denti.cristina@gmail.com';
-  const sender = process.env.ALERT_EMAIL || 'robykz@gmail.com';
+  const sender = 'noreply@resend.catholically.com'; // Verified domain
 
   try {
     console.log(`[Email Label] Downloading PDF from Google Drive: ${labelUrl}`);
