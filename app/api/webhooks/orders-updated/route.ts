@@ -184,6 +184,52 @@ async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAd
   }
 }
 
+// Set metafield on order to trigger email sending
+async function setOrderMetafield(orderId: number, namespace: string, key: string, value: string) {
+  const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+  const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+  const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+  const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+  const orderGid = `gid://shopify/Order/${orderId}`;
+
+  const metafieldMutation = `
+    mutation setMetafield($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          namespace
+          key
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }`;
+
+  await fetch(`${adminUrl}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: metafieldMutation,
+      variables: {
+        metafields: [{
+          ownerId: orderGid,
+          namespace: namespace,
+          key: key,
+          value: value,
+          type: "single_line_text_field"
+        }]
+      },
+    }),
+  });
+}
+
 export async function POST(req: Request) {
   const url = new URL(req.url);
   const debug = url.searchParams.get("debug") === "1";
@@ -474,6 +520,18 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
+  }
+
+  // For MI orders, set metafield to trigger email sending
+  if (senderCode === "MI") {
+    try {
+      console.log(`Setting email recipient metafield for MI order ${order.name}`);
+      await setOrderMetafield(order.id, "spedirepro", "label_email_recipient", "denticristina@gmail.com");
+      console.log(`✅ Email recipient metafield set successfully`);
+    } catch (error) {
+      console.error("Failed to set email recipient metafield:", error);
+      // Don't fail the whole request if metafield set fails
+    }
   }
 
   return json(200, { ok: true, create_label_response: text });
