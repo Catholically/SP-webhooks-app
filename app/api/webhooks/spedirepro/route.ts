@@ -1,4 +1,9 @@
-export const runtime = "edge";
+// Change runtime to nodejs to support googleapis and pdf-lib
+export const runtime = "nodejs";
+
+import { handleCustomsDeclaration } from '@/lib/customs-handler';
+import { sendLabelEmail } from '@/lib/email-label';
+import { downloadAndUploadToGoogleDrive } from '@/lib/google-drive';
 
 type SproWebhook = {
   update_type?: string;
@@ -14,6 +19,8 @@ type SproWebhook = {
   exception_status?: number;
   tracking_url?: string;
   label?: { link?: string; expire_at?: string };
+  price?: number;  // Shipping cost/price
+  cost?: number;   // Alternative field name
 };
 
 const json = (status: number, obj: unknown) =>
@@ -49,6 +56,23 @@ async function findOrderIdByName(nameRaw: string): Promise<string | null> {
   return id ? String(id) : null;
 }
 
+async function getOrderMetafield(orderGid: string, namespace: string, key: string): Promise<string | null> {
+  const q = `
+    query($id: ID!, $namespace: String!, $key: String!) {
+      order(id: $id) {
+        metafield(namespace: $namespace, key: $key) {
+          value
+        }
+      }
+    }`;
+  const r = await shopifyFetch("/graphql.json", {
+    method: "POST",
+    body: JSON.stringify({ query: q, variables: { id: orderGid, namespace, key } }),
+  });
+  const jsonData = await r.json();
+  return jsonData?.data?.order?.metafield?.value || null;
+}
+
 async function getOrderCustomerName(orderGid: string): Promise<string> {
   const q = `
     query($id: ID!) {
@@ -78,7 +102,7 @@ async function getOrderCustomerName(orderGid: string): Promise<string> {
          "Cliente";
 }
 
-async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
+async function metafieldsSet(orderGid: string, kv: Record<string, string>, reference?: string) {
   const entries = Object.entries(kv).map(([key, value]) => {
     // Determina il tipo corretto in base al campo
     let type = "single_line_text_field";
@@ -94,6 +118,17 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
       value,
     };
   });
+
+  // Add spro.reference metafield if reference is provided
+  if (reference) {
+    entries.push({
+      ownerId: orderGid,
+      namespace: "spro",
+      key: "reference",
+      type: "single_line_text_field",
+      value: reference,
+    });
+  }
 
   console.log("Setting metafields:", entries);
 
@@ -181,75 +216,6 @@ async function fulfill(foId: string, tracking: string, trackingUrl?: string, com
   await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
 }
 
-async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: string, courier: string, customerName: string) {
-  const resendApiKey = process.env.RESEND_API_KEY;
-  if (!resendApiKey) {
-    console.error("RESEND_API_KEY not configured");
-    return;
-  }
-
-  try {
-    console.log("Downloading PDF from:", labelUrl);
-
-    // Download the PDF from SpedirePro
-    const pdfResponse = await fetch(labelUrl);
-    if (!pdfResponse.ok) {
-      console.error("Failed to download PDF:", pdfResponse.status, pdfResponse.statusText);
-      return;
-    }
-
-    const pdfBuffer = await pdfResponse.arrayBuffer();
-    const pdfBase64 = Buffer.from(pdfBuffer).toString('base64');
-
-    console.log("Sending label email to denticristina@gmail.com with PDF attachment");
-
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${resendApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: "Holy Trove <noreply@resend.catholically.com>",
-        to: ["denticristina@gmail.com"],
-        subject: `Etichetta Spedizione - Ordine ${merchantRef}`,
-        html: `
-          <h2>Nuova Etichetta di Spedizione</h2>
-          <br>
-          <p><strong>Order name:</strong> ${merchantRef}</p>
-          <br>
-          <p><strong>Customer name:</strong> ${customerName}</p>
-          <br>
-          <p><strong>Tracking Number:</strong> ${tracking}</p>
-          <br>
-          <p><strong>Corriere:</strong> ${courier}</p>
-          <br>
-          <br>
-          <p>L'etichetta di spedizione è allegata a questa email in formato PDF.</p>
-          <br>
-          <p style="color: #666; font-size: 14px;">Puoi stampare l'etichetta direttamente dall'allegato.</p>
-        `,
-        attachments: [
-          {
-            filename: `etichetta-${merchantRef.replace('#', '')}.pdf`,
-            content: pdfBase64,
-          }
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.text();
-      console.error("Error sending email:", errorData);
-    } else {
-      const data = await response.json();
-      console.log("Email sent successfully with PDF attachment:", data);
-    }
-  } catch (error) {
-    console.error("Failed to send email:", error);
-  }
-}
-
 export async function POST(req: Request) {
   // token check
   const url = new URL(req.url);
@@ -296,36 +262,105 @@ export async function POST(req: Request) {
   }
   const orderGid = `gid://shopify/Order/${orderIdNum}`;
 
-  await metafieldsSet(orderGid, {
+  // Prepare metafields object
+  const metafields: Record<string, string> = {
     reference: body?.reference || "",
     order_ref: body?.order || "",
     tracking,
-    tracking_url: trackingUrl,
     label_url: labelUrl,
-    ldv_url: labelUrl,  // Aggiunto per compatibilità
+    ldv_url: labelUrl,  // Will be updated with Google Drive URL
     courier,  // Nome completo (es: "UPS STANDARD - PROMO")
     courier_group: courierGroup,  // Nome standard (es: "UPS")
-  });
+  };
+
+  // Only add tracking URL metafield if it has value
+  if (trackingUrl) metafields.tracking_url = trackingUrl;
+
+  // Add shipping price if available (try both 'price' and 'cost' fields)
+  const shippingPrice = body?.price ?? body?.cost;
+  if (shippingPrice !== undefined && shippingPrice !== null) {
+    metafields.shipping_price = String(shippingPrice);
+  }
+
+  // Download label from AWS and upload to Google Drive for permanent storage
+  let permanentLabelUrl = labelUrl; // Fallback to original URL
+  if (labelUrl) {
+    try {
+      console.log("[Label Storage] Downloading and uploading label to Google Drive...");
+      const orderNumber = merchantRef.replace('#', ''); // e.g., "35622182025"
+      permanentLabelUrl = await downloadAndUploadToGoogleDrive(labelUrl, orderNumber, 'label');
+      console.log("[Label Storage] ✅ Label stored on Google Drive:", permanentLabelUrl);
+
+      // Update metafields with permanent Google Drive URL
+      metafields.label_url = permanentLabelUrl;
+      metafields.ldv_url = permanentLabelUrl;  // Aggiunto per compatibilità
+    } catch (err) {
+      console.error("[Label Storage] ❌ Failed to upload label to Google Drive:", err);
+      // Fallback to AWS URL
+      metafields.label_url = labelUrl;
+      metafields.ldv_url = labelUrl;
+    }
+  }
+
+  await metafieldsSet(orderGid, metafields, body?.reference);
 
   console.log("Metafields set successfully for order:", orderIdNum);
+
+  // Check if order needs label email sent (set by MI-CREATE or MI-CREATE-NOD tags)
+  if (permanentLabelUrl) {
+    try {
+      const emailRecipient = await getOrderMetafield(orderGid, "spedirepro", "label_email_recipient");
+      console.log("[Label Email] Email recipient metafield:", emailRecipient);
+
+      if (emailRecipient) {
+        console.log(`[Label Email] Sending label email to ${emailRecipient} with PDF attachment`);
+        await sendLabelEmail(merchantRef, permanentLabelUrl);
+      } else {
+        console.log("[Label Email] No email recipient set, skipping label email");
+      }
+    } catch (err) {
+      console.error("[Label Email] Error checking metafield or sending email:", err);
+      // Don't fail the webhook - just log the error
+    }
+  }
 
   // Auto-fulfill the order with tracking information
   // Cerca il primo fulfillment order OPEN (per gestire ordini multi-location)
   // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")
+  console.log("[DEBUG] Looking for fulfillment order...");
   const foId = await getOpenFulfillmentOrder(orderGid);
+  console.log("[DEBUG] Fulfillment Order ID found:", foId);
+
   if (foId) {
-    console.log("Fulfilling order with tracking:", tracking, "FO:", foId);
-    await fulfill(foId, tracking, trackingUrl, courierGroup);
+    console.log("[DEBUG] Starting fulfillment with tracking:", tracking);
+    try {
+      await fulfill(foId, tracking, trackingUrl, courierGroup);
+      console.log("[DEBUG] ✅ Fulfillment completed successfully");
+    } catch (err) {
+      console.error("[DEBUG] ❌ Fulfillment error:", err);
+    }
   } else {
-    console.log("No open fulfillment order found for tracking:", tracking);
+    console.log("[DEBUG] ⚠️ No fulfillment order found - skipping fulfillment");
   }
 
-  // Send email with label to denticristina@gmail.com
-  if (labelUrl) {
-    const customerName = await getOrderCustomerName(orderGid);
-    await sendLabelEmail(labelUrl, tracking, merchantRef, courier, customerName);
-  } else {
-    console.log("No label URL available, skipping email notification");
+  // Process customs declaration (await to ensure it completes)
+  // This will check if destination is extra-EU and generate customs docs if needed
+  const reference = body?.reference || "";
+  if (reference) {
+    // Check if order has skip_customs_auto metafield (set by -NOD tags)
+    const skipCustomsAuto = await getOrderMetafield(orderGid, "spedirepro", "skip_customs_auto");
+
+    if (skipCustomsAuto === "true") {
+      console.log(`[Customs] ⏭️ Skipping automatic customs generation for order ${merchantRef} (skip_customs_auto metafield set)`);
+      console.log('[Customs] User will manually generate customs declaration using RM-DOG or MI-DOG tag');
+    } else {
+      try {
+        await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference);
+      } catch (err) {
+        console.error('[Webhook] Error in customs processing:', err);
+        // Don't fail the webhook - just log the error
+      }
+    }
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
