@@ -79,6 +79,20 @@ SPRO_WEBHOOK_TOKEN=your_random_secret_token_here
 openssl rand -hex 32
 ```
 
+### Email Notifications (REQUIRED for MI-CREATE)
+
+```bash
+# Resend API Key for sending label notifications
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxxx
+```
+
+**How to get your Resend API Key:**
+1. Go to [Resend.com](https://resend.com) and create an account
+2. Navigate to **API Keys** in the dashboard
+3. Create a new API key
+4. Add the domain `catholically.com` to your verified domains
+5. Copy the API key and add it to Vercel environment variables
+
 
 ---
 
@@ -172,20 +186,26 @@ The integration stores data in Shopify order metafields under namespace `spedire
 
 ## 6. Manual Label Creation with Tag
 
-**Label creation is triggered manually by adding the `SPRO-CREATE` tag to an order.**
+**Label creation is triggered manually by adding location-specific tags to an order.**
+
+### Available Tags:
+
+- **MI-CREATE** - Creates label with Milano (Inzago) sender address
+- **RM-CREATE** - Creates label with Roma (Fiumicino) sender address
 
 ### How to use:
 
 1. **In Shopify Admin**, open an order you want to ship
-2. **Add the tag** `SPRO-CREATE` to the order
+2. **Add the tag** `MI-CREATE` or `RM-CREATE` to the order
 3. **Save the order** - this triggers the webhook
 4. The system will automatically:
-   - ✅ Create a shipping label via SpedirePro
+   - ✅ Create a shipping label via SpedirePro with the appropriate sender
    - ✅ Wait for tracking from SpedirePro
    - ✅ Store tracking & label URL in order metafields
    - ✅ Auto-fulfill the order
+   - ✅ **Send email notification to denticristina@gmail.com with the label PDF**
 
-**Important:** Orders without the `SPRO-CREATE` tag will be skipped (no label created).
+**Important:** Orders without a valid CREATE tag will be skipped (no label created).
 
 ---
 

@@ -126,6 +126,51 @@ async function fulfill(foId: string, tracking: string, trackingUrl?: string, com
   await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
 }
 
+async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: string, courier: string) {
+  const resendApiKey = process.env.RESEND_API_KEY;
+  if (!resendApiKey) {
+    console.error("RESEND_API_KEY not configured");
+    return;
+  }
+
+  try {
+    console.log("Sending label email to denticristina@gmail.com");
+
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${resendApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "Holy Trove <noreply@catholically.com>",
+        to: ["denticristina@gmail.com"],
+        subject: `Etichetta Spedizione - Ordine ${merchantRef}`,
+        html: `
+          <h2>Nuova Etichetta di Spedizione</h2>
+          <p><strong>Ordine:</strong> ${merchantRef}</p>
+          <p><strong>Tracking Number:</strong> ${tracking}</p>
+          <p><strong>Corriere:</strong> ${courier}</p>
+          <p><strong>Link Etichetta:</strong> <a href="${labelUrl}" target="_blank">Scarica Etichetta PDF</a></p>
+          <br>
+          <p>L'etichetta è disponibile al seguente link:</p>
+          <p><a href="${labelUrl}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Scarica Etichetta</a></p>
+        `,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error("Error sending email:", errorData);
+    } else {
+      const data = await response.json();
+      console.log("Email sent successfully:", data);
+    }
+  } catch (error) {
+    console.error("Failed to send email:", error);
+  }
+}
+
 export async function POST(req: Request) {
   // token check
   const url = new URL(req.url);
@@ -190,6 +235,13 @@ export async function POST(req: Request) {
   const foId = await firstFO(orderGid);
   if (foId) {
     await fulfill(foId, tracking, trackingUrl, courierGroup);
+  }
+
+  // Send email with label to denticristina@gmail.com
+  if (labelUrl) {
+    await sendLabelEmail(labelUrl, tracking, merchantRef, courier);
+  } else {
+    console.log("No label URL available, skipping email notification");
   }
 
   return json(200, { ok: true, order_id: orderIdNum, tracking, label_url: labelUrl });
