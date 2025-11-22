@@ -120,6 +120,7 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
     'assurance',
     'shipping protection',
     'green shipping',
+    'tip', // Gratuity/tip line items
   ];
 
   for (const edge of order.lineItems.edges || []) {
