@@ -1,4 +1,7 @@
-export const runtime = "edge";
+export const runtime = "nodejs";
+
+import { canAutoProcessLabel } from '@/lib/eu-countries';
+import { sendUnsupportedCountryAlert } from '@/lib/email-alerts';
 
 // ---------- utils & env compat ----------
 const first = (...vals: (string | undefined | null)[]) =>
@@ -217,6 +220,102 @@ export async function POST(req: Request) {
 
   console.log("Orders-updated webhook - Order:", order.name, "Tags:", tags);
 
+  // 📄 CHECK FOR DOG TAGS (MI-DOG, RM-DOG) - Generate customs docs only
+  for (const tag of tags) {
+    if (tag.endsWith("-DOG")) {
+      const code = tag.replace("-DOG", "");
+      console.log(`Found DOG tag: ${tag}, extracted code: ${code}`);
+
+      if (!SENDERS[code as keyof typeof SENDERS]) {
+        console.log(`No sender found for code: ${code}, skipping`);
+        continue;
+      }
+
+      console.log(`🔧 Processing DOG tag for order ${order.name}`);
+
+      // Check if order already has tracking (required for DOG tags)
+      // We'll fetch this from Shopify metafields
+      const orderIdStr = String(order.id);
+      const orderGid = `gid://shopify/Order/${orderIdStr}`;
+
+      // Import needed function at runtime
+      const { handleCustomsDeclaration } = await import('@/lib/customs-handler');
+
+      try {
+        // Fetch tracking from metafields
+        const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+        const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+        const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+        const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+        const metafieldQuery = `
+          query getTracking($id: ID!) {
+            order(id: $id) {
+              metafield(namespace: "spedirepro", key: "tracking") {
+                value
+              }
+              referenceMetafield: metafield(namespace: "spro", key: "reference") {
+                value
+              }
+            }
+          }`;
+
+        const metaResp = await fetch(`${adminUrl}/graphql.json`, {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": token,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            query: metafieldQuery,
+            variables: { id: orderGid },
+          }),
+        });
+
+        const metaData = await metaResp.json();
+        const tracking = metaData?.data?.order?.metafield?.value;
+        const reference = metaData?.data?.order?.referenceMetafield?.value;
+
+        if (!tracking || !reference) {
+          console.error(`❌ Cannot process ${tag}: Missing tracking (${tracking}) or reference (${reference})`);
+          return json(200, {
+            ok: false,
+            error: "missing-tracking-or-reference",
+            message: `Cannot generate customs docs: tracking or SpedirePro reference not found. Please ensure label was created first.`,
+            tag: tag,
+          });
+        }
+
+        console.log(`✅ Found tracking: ${tracking}, reference: ${reference}`);
+        console.log(`Generating customs declaration for ${tag}...`);
+
+        // Generate customs declaration
+        await handleCustomsDeclaration(orderIdStr, order.name, tracking, reference);
+
+        // Update tags: remove DOG tag, add DOG-DONE
+        await updateOrderTags(order.id, [tag], [`${code}-DOG-DONE`]);
+
+        console.log(`✅ Customs declaration generated successfully for ${order.name}`);
+
+        return json(200, {
+          ok: true,
+          action: "customs-generated",
+          tag: tag,
+          order: order.name,
+          tracking,
+        });
+      } catch (error) {
+        console.error(`❌ Error processing ${tag}:`, error);
+        return json(200, {
+          ok: false,
+          error: "customs-generation-failed",
+          message: error instanceof Error ? error.message : String(error),
+          tag: tag,
+        });
+      }
+    }
+  }
+
   let senderCode: string | null = null;
   let usedTag: string | null = null;
 
@@ -256,6 +355,35 @@ export async function POST(req: Request) {
   if (!to?.country_code || !to?.address1 || !to?.zip || !to?.city) {
     return json(200, { ok: true, skipped: "missing shipping address fields" });
   }
+
+  // 🚨 COUNTRY CHECK: Block label creation for non-USA/EU countries
+  if (!canAutoProcessLabel(to.country_code)) {
+    console.warn(`⚠️ BLOCKED: Cannot create label with ${usedTag} for country ${to.country_code}`);
+    console.warn(`This tag can only be used for USA or EU countries`);
+    console.warn(`Please create the label manually and use ${senderCode}-DOG tag for customs docs`);
+
+    // Send alert email immediately
+    await sendUnsupportedCountryAlert(
+      order.name,
+      order.name.replace('#', ''),
+      to.country_code,
+      to.country_code, // Country name not available, use code
+      undefined, // No tracking yet
+      undefined  // No drive URL yet
+    );
+
+    return json(200, {
+      ok: false,
+      blocked: true,
+      reason: "unsupported-country-for-ddp-account",
+      message: `Cannot use ${usedTag} for ${to.country_code}. This tag is only for USA/EU. Please create label manually and use ${senderCode}-DOG for customs.`,
+      country: to.country_code,
+      tag: usedTag,
+      suggestedTag: `${senderCode}-DOG`
+    });
+  }
+
+  console.log(`✅ Country ${to.country_code} is supported for auto label creation (USA or EU)`);
 
   const receiverPhone =
     first(to.phone, order.billing_address?.phone, "+15555555555") || "+15555555555";
