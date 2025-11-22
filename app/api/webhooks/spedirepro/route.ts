@@ -134,7 +134,19 @@ async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: s
   }
 
   try {
-    console.log("Sending label email to denticristina@gmail.com");
+    console.log("Downloading PDF from:", labelUrl);
+
+    // Download the PDF from SpedirePro
+    const pdfResponse = await fetch(labelUrl);
+    if (!pdfResponse.ok) {
+      console.error("Failed to download PDF:", pdfResponse.status, pdfResponse.statusText);
+      return;
+    }
+
+    const pdfBuffer = await pdfResponse.arrayBuffer();
+    const pdfBase64 = Buffer.from(pdfBuffer).toString('base64');
+
+    console.log("Sending label email to denticristina@gmail.com with PDF attachment");
 
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -151,11 +163,16 @@ async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: s
           <p><strong>Ordine:</strong> ${merchantRef}</p>
           <p><strong>Tracking Number:</strong> ${tracking}</p>
           <p><strong>Corriere:</strong> ${courier}</p>
-          <p><strong>Link Etichetta:</strong> <a href="${labelUrl}" target="_blank">Scarica Etichetta PDF</a></p>
           <br>
-          <p>L'etichetta è disponibile al seguente link:</p>
-          <p><a href="${labelUrl}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Scarica Etichetta</a></p>
+          <p>L'etichetta di spedizione è allegata a questa email in formato PDF.</p>
+          <p style="color: #666; font-size: 14px;">Puoi stampare l'etichetta direttamente dall'allegato.</p>
         `,
+        attachments: [
+          {
+            filename: `etichetta-${merchantRef.replace('#', '')}.pdf`,
+            content: pdfBase64,
+          }
+        ],
       }),
     });
 
@@ -164,7 +181,7 @@ async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: s
       console.error("Error sending email:", errorData);
     } else {
       const data = await response.json();
-      console.log("Email sent successfully:", data);
+      console.log("Email sent successfully with PDF attachment:", data);
     }
   } catch (error) {
     console.error("Failed to send email:", error);
