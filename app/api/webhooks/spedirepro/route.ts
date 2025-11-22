@@ -49,6 +49,35 @@ async function findOrderIdByName(nameRaw: string): Promise<string | null> {
   return id ? String(id) : null;
 }
 
+async function getOrderCustomerName(orderGid: string): Promise<string> {
+  const q = `
+    query($id: ID!) {
+      order(id: $id) {
+        customer {
+          displayName
+          firstName
+          lastName
+        }
+        shippingAddress {
+          name
+        }
+      }
+    }`;
+  const r = await shopifyFetch("/graphql.json", {
+    method: "POST",
+    body: JSON.stringify({ query: q, variables: { id: orderGid } }),
+  });
+  const jsonData = await r.json();
+  const customer = jsonData?.data?.order?.customer;
+  const shippingAddress = jsonData?.data?.order?.shippingAddress;
+
+  // Try to get customer name from different sources
+  return customer?.displayName ||
+         `${customer?.firstName || ''} ${customer?.lastName || ''}`.trim() ||
+         shippingAddress?.name ||
+         "Cliente";
+}
+
 async function metafieldsSet(orderGid: string, kv: Record<string, string>) {
   const entries = Object.entries(kv).map(([key, value]) => {
     // Determina il tipo corretto in base al campo
@@ -126,7 +155,7 @@ async function fulfill(foId: string, tracking: string, trackingUrl?: string, com
   await shopifyFetch("/graphql.json", { method: "POST", body: JSON.stringify({ query: q, variables: vars }) });
 }
 
-async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: string, courier: string) {
+async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: string, courier: string, customerName: string) {
   const resendApiKey = process.env.RESEND_API_KEY;
   if (!resendApiKey) {
     console.error("RESEND_API_KEY not configured");
@@ -155,12 +184,13 @@ async function sendLabelEmail(labelUrl: string, tracking: string, merchantRef: s
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "Holy Trove <noreply@catholically.com>",
+        from: "robykz@gmail.com",
         to: ["denticristina@gmail.com"],
         subject: `Etichetta Spedizione - Ordine ${merchantRef}`,
         html: `
           <h2>Nuova Etichetta di Spedizione</h2>
-          <p><strong>Ordine:</strong> ${merchantRef}</p>
+          <p><strong>Order name:</strong> ${merchantRef}</p>
+          <p><strong>Customer name:</strong> ${customerName}</p>
           <p><strong>Tracking Number:</strong> ${tracking}</p>
           <p><strong>Corriere:</strong> ${courier}</p>
           <br>
@@ -256,7 +286,8 @@ export async function POST(req: Request) {
 
   // Send email with label to denticristina@gmail.com
   if (labelUrl) {
-    await sendLabelEmail(labelUrl, tracking, merchantRef, courier);
+    const customerName = await getOrderCustomerName(orderGid);
+    await sendLabelEmail(labelUrl, tracking, merchantRef, courier, customerName);
   } else {
     console.log("No label URL available, skipping email notification");
   }
