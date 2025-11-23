@@ -125,6 +125,21 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
 
   for (const edge of order.lineItems.edges || []) {
     const node = edge.node;
+
+    // Check for service/non-physical items FIRST (before variant check)
+    // Some items like "Tip", "Insurance" don't have variants but should be excluded
+    const title = (node.title || '').toLowerCase();
+
+    const isService = serviceKeywords.some(keyword =>
+      title.includes(keyword)
+    );
+
+    if (isService) {
+      console.log(`[Customs] Skipping service item: ${node.title}`);
+      continue; // Skip this item, don't include in customs declaration
+    }
+
+    // Now check for variant/product (for actual physical products)
     const variant = node.variant;
     const product = variant?.product;
 
@@ -140,15 +155,15 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
       continue;
     }
 
-    // Skip service/insurance items - they don't need customs declarations
-    const title = (node.title || product.title || '').toLowerCase();
+    // Double-check with product info for service items
+    const productTitle = (product.title || '').toLowerCase();
     const productType = (product.productType || '').toLowerCase();
 
-    const isService = serviceKeywords.some(keyword =>
-      title.includes(keyword) || productType.includes(keyword)
+    const isServiceProduct = serviceKeywords.some(keyword =>
+      productTitle.includes(keyword) || productType.includes(keyword)
     );
 
-    if (isService) {
+    if (isServiceProduct) {
       console.log(`[Customs] Skipping service item: ${node.title}`);
       continue; // Skip this item, don't include in customs declaration
     }
