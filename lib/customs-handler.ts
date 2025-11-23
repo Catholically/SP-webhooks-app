@@ -130,15 +130,26 @@ async function fetchOrderShippingInfo(orderId: string): Promise<OrderShippingInf
  */
 async function uploadToSpedirePro(
   reference: string,
-  pdfBuffer: Buffer
+  pdfBuffer: Buffer,
+  countryCode: string
 ): Promise<boolean> {
-  const SPRO_API_KEY = process.env.SPRO_API_KEY;
+  // Select correct API key based on destination
+  // DDP account (SPRO_API_KEY): USA only
+  // DDU account (SPRO_API_KEY_NODDP): All other non-EU countries
+  const isUSA = countryCode === 'US';
+  const SPRO_API_KEY = isUSA
+    ? process.env.SPRO_API_KEY
+    : process.env.SPRO_API_KEY_NODDP;
+
+  const accountType = isUSA ? 'DDP (USA)' : 'DDU (NODDP)';
   const SPRO_API_BASE = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
 
   if (!SPRO_API_KEY) {
-    console.error('[Customs] SPRO_API_KEY not configured');
+    console.error(`[Customs] ${isUSA ? 'SPRO_API_KEY' : 'SPRO_API_KEY_NODDP'} not configured`);
     return false;
   }
+
+  console.log(`[Customs] Uploading customs to SpedirePro ${accountType} account for ${countryCode}...`);
 
   try {
     // Create FormData for multipart upload
@@ -281,9 +292,9 @@ export async function handleCustomsDeclaration(
 
     console.log(`[Customs] PDF generated, size: ${pdfBuffer.length} bytes`);
 
-    // Step 5: Upload to SpedirePro
+    // Step 5: Upload to SpedirePro (using correct account based on country)
     console.log('[Customs] Uploading to SpedirePro...');
-    const sproSuccess = await uploadToSpedirePro(reference, pdfBuffer);
+    const sproSuccess = await uploadToSpedirePro(reference, pdfBuffer, shippingInfo.countryCode);
     if (!sproSuccess) {
       console.warn('[Customs] Failed to upload to SpedirePro, but continuing with Drive upload');
     }
