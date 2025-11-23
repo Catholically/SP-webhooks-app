@@ -314,7 +314,39 @@ export async function POST(req: Request) {
 
       if (emailRecipient) {
         console.log(`[Label Email] Sending label email to ${emailRecipient} with PDF attachment`);
-        await sendLabelEmail(merchantRef, permanentLabelUrl, emailRecipient);
+
+        // Fetch customer name from order
+        let customerName = '';
+        try {
+          const orderQuery = `
+            query getOrder($id: ID!) {
+              order(id: $id) {
+                customer {
+                  displayName
+                }
+                shippingAddress {
+                  name
+                }
+              }
+            }
+          `;
+          const orderResp = await shopifyFetch("/graphql.json", {
+            method: "POST",
+            body: JSON.stringify({
+              query: orderQuery,
+              variables: { id: orderGid }
+            })
+          });
+          const orderData = await orderResp.json();
+          customerName = orderData?.data?.order?.shippingAddress?.name ||
+                        orderData?.data?.order?.customer?.displayName ||
+                        'Cliente';
+        } catch (err) {
+          console.error("[Label Email] Failed to fetch customer name:", err);
+          customerName = 'Cliente';
+        }
+
+        await sendLabelEmail(merchantRef, permanentLabelUrl, emailRecipient, customerName, tracking, courier);
       } else {
         console.log("[Label Email] No email recipient set, skipping label email");
       }

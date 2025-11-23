@@ -5,12 +5,18 @@ import { getResendClient } from './email-alerts';
  * @param orderName - Order name/ID (e.g., #35622182025)
  * @param labelUrl - Google Drive URL to the shipping label PDF
  * @param recipient - Email address to send the label to (default: denticristina@gmail.com)
+ * @param customerName - Customer name (optional)
+ * @param tracking - Tracking number (optional)
+ * @param courier - Courier/carrier name (optional)
  * @returns Success status
  */
 export async function sendLabelEmail(
   orderName: string,
   labelUrl: string,
-  recipient: string = 'denticristina@gmail.com'
+  recipient: string = 'denticristina@gmail.com',
+  customerName?: string,
+  tracking?: string,
+  courier?: string
 ): Promise<boolean> {
   const resend = getResendClient();
   if (!resend) {
@@ -47,11 +53,17 @@ export async function sendLabelEmail(
     const result = await resend.emails.send({
       from: `Holy Trove <${sender}>`,
       to: recipient,
-      subject: orderName,
+      subject: `Nuova Etichetta di Spedizione - ${orderName}`,
       html: `
-        <h2>Shipping Label for Order ${orderName}</h2>
-        <p>The shipping label is attached to this email as a PDF file.</p>
-        <p>Please find the label attached and print it for shipping.</p>
+        <h2>Nuova Etichetta di Spedizione</h2>
+
+        <p><strong>Order name:</strong> ${orderName}</p>
+        ${customerName ? `<p><strong>Customer name:</strong> ${customerName}</p>` : ''}
+        ${tracking ? `<p><strong>Tracking Number:</strong> ${tracking}</p>` : ''}
+        ${courier ? `<p><strong>Corriere:</strong> ${courier}</p>` : ''}
+
+        <p style="margin-top: 20px;">L'etichetta di spedizione è allegata a questa email in formato PDF.</p>
+        <p>Puoi stampare l'etichetta direttamente dall'allegato.</p>
       `,
       attachments: [
         {
