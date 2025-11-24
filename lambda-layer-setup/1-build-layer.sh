@@ -28,7 +28,7 @@ fi
 
 echo -e "${YELLOW}📦 Step 1: Creating layer directory structure...${NC}"
 rm -rf "$LAYER_DIR"
-mkdir -p "$LAYER_DIR/python"
+mkdir -p "$LAYER_DIR/python/lib/python${PYTHON_VERSION}/site-packages"
 
 echo -e "${YELLOW}📥 Step 2: Installing dependencies...${NC}"
 echo "This may take a few minutes..."
@@ -36,7 +36,7 @@ echo "This may take a few minutes..."
 # Install dependencies into the python directory
 # The --platform and --only-binary flags ensure compatibility with Lambda's Linux environment
 pip install -r "$REQUIREMENTS_FILE" \
-    --target "$LAYER_DIR/python" \
+    --target "$LAYER_DIR/python/lib/python${PYTHON_VERSION}/site-packages" \
     --platform manylinux2014_x86_64 \
     --only-binary=:all: \
     --python-version "$PYTHON_VERSION" \
@@ -44,7 +44,7 @@ pip install -r "$REQUIREMENTS_FILE" \
     2>&1 | tee install.log
 
 # Alternative method if the above fails (for packages without prebuilt wheels):
-# pip install -r "$REQUIREMENTS_FILE" --target "$LAYER_DIR/python"
+# pip install -r "$REQUIREMENTS_FILE" --target "$LAYER_DIR/python/lib/python${PYTHON_VERSION}/site-packages"
 
 echo -e "${YELLOW}🗑️  Step 3: Cleaning up unnecessary files...${NC}"
 # Remove unnecessary files to reduce layer size
