@@ -572,13 +572,15 @@ export async function POST(req: Request) {
     amount: 10.0,
   };
 
-  // Add attention/company field for C/O if present
-  if (to.company) {
-    sproBody.receiver.attention = to.company.substring(0, 27);
-  }
+  // Add attention_name field for C/O if company is present
+  // This is the correct field per SpedirePro API documentation
+  sproBody.receiver.attention_name = to.company ? to.company.substring(0, 27) : "";
 
   if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
   else sproBody.courier_fallback = true;
+
+  // Log the complete request body to debug C/O field issue
+  console.log('[DEBUG] SpedirePro request body:', JSON.stringify(sproBody, null, 2));
 
   // Select correct API key based on account type
   const activeApiKey = isDDU ? SPRO_API_KEY_NODDP : SPRO_API_KEY;
