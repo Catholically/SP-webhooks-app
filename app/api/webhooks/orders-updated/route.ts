@@ -572,14 +572,9 @@ export async function POST(req: Request) {
     amount: 10.0,
   };
 
-  // Add company field for C/O if present - trying multiple field names
-  if (to.company) {
-    const companyName = to.company.substring(0, 27);
-    // Try multiple possible field names that SpedirePro/UPS might use for C/O
-    sproBody.receiver.company_name = companyName;
-    sproBody.receiver.attention = companyName;
-    sproBody.receiver.care_of = companyName;
-  }
+  // Add attention_name field for C/O if company is present
+  // This is the correct field per SpedirePro API documentation
+  sproBody.receiver.attention_name = to.company ? to.company.substring(0, 27) : "";
 
   if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
   else sproBody.courier_fallback = true;
