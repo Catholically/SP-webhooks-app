@@ -536,8 +536,9 @@ export async function POST(req: Request) {
       ? Math.max(0.01, order.total_weight / 1000)
       : DEF_WEIGHT_KG;
 
-  // SpedirePro ha un limite di 27 caratteri per receiver.name
-  const receiverName = (first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
+  // SpedirePro uses receiver.name as C/O field on UPS labels
+  // If company is present, use it; otherwise use person's name
+  const receiverName = (to.company || first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
     .substring(0, 27);
 
   const sproBody: any = {
@@ -561,7 +562,6 @@ export async function POST(req: Request) {
       city: to.city,
       postcode: to.zip,
       street: to.address1,
-      company: to.company || undefined, // C/O field for UPS labels
     },
     packages: [{ weight: weightKg, width: DEF_W, height: DEF_H, depth: DEF_D }],
     content: {
