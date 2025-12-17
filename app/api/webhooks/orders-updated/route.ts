@@ -69,6 +69,7 @@ type ShopifyOrder = {
     name?: string;
     first_name?: string;
     last_name?: string;
+    company?: string;
     phone?: string;
     country_code?: string;
     province_code?: string;
@@ -560,6 +561,7 @@ export async function POST(req: Request) {
       city: to.city,
       postcode: to.zip,
       street: to.address1,
+      company: to.company || undefined, // C/O field for UPS labels
     },
     packages: [{ weight: weightKg, width: DEF_W, height: DEF_H, depth: DEF_D }],
     content: {
