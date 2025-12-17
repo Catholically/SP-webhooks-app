@@ -536,9 +536,9 @@ export async function POST(req: Request) {
       ? Math.max(0.01, order.total_weight / 1000)
       : DEF_WEIGHT_KG;
 
-  // SpedirePro uses receiver.name as C/O field on UPS labels
-  // If company is present, use it; otherwise use person's name
-  const receiverName = (to.company || first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
+  // Build receiver name and attention fields
+  // name = person's name (always), attention = company (C/O field if present)
+  const personName = (first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
     .substring(0, 27);
 
   const sproBody: any = {
@@ -554,7 +554,7 @@ export async function POST(req: Request) {
       street: SENDER.street,
     },
     receiver: {
-      name: receiverName,
+      name: personName,
       email: receiverEmail,
       phone: receiverPhone,
       country: to.country_code,
@@ -563,12 +563,19 @@ export async function POST(req: Request) {
       postcode: to.zip,
       street: to.address1,
     },
-    packages: [{ weight: weightKg, width: DEF_W, height: DEF_H, depth: DEF_D }],
-    content: {
-      description: order.line_items?.[0]?.title || "Order items",
-      amount: 10.0,
-    },
   };
+
+  // Add packages and content
+  sproBody.packages = [{ weight: weightKg, width: DEF_W, height: DEF_H, depth: DEF_D }];
+  sproBody.content = {
+    description: order.line_items?.[0]?.title || "Order items",
+    amount: 10.0,
+  };
+
+  // Add attention/company field for C/O if present
+  if (to.company) {
+    sproBody.receiver.attention = to.company.substring(0, 27);
+  }
 
   if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
   else sproBody.courier_fallback = true;
