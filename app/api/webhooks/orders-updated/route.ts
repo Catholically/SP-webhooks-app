@@ -69,6 +69,7 @@ type ShopifyOrder = {
     name?: string;
     first_name?: string;
     last_name?: string;
+    company?: string;
     phone?: string;
     country_code?: string;
     province_code?: string;
@@ -535,8 +536,9 @@ export async function POST(req: Request) {
       ? Math.max(0.01, order.total_weight / 1000)
       : DEF_WEIGHT_KG;
 
-  // SpedirePro ha un limite di 27 caratteri per receiver.name
-  const receiverName = (first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
+  // SpedirePro uses receiver.name as C/O field on UPS labels
+  // If company is present, use it; otherwise use person's name
+  const receiverName = (to.company || first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
     .substring(0, 27);
 
   const sproBody: any = {
