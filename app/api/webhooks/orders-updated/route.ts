@@ -448,6 +448,59 @@ export async function POST(req: Request) {
 
   console.log(`Processing order ${order.name} with sender ${senderCode}`);
 
+  // 🔒 DUPLICATE PREVENTION: Check if label already exists
+  // This prevents race conditions with multi-location orders
+  const orderIdStr = String(order.id);
+  const orderGid = `gid://shopify/Order/${orderIdStr}`;
+
+  const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+  const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+  const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+  const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+  const checkMetafieldQuery = `
+    query checkExistingLabel($id: ID!) {
+      order(id: $id) {
+        tracking: metafield(namespace: "spedirepro", key: "tracking") { value }
+        reference: metafield(namespace: "spro", key: "reference") { value }
+      }
+    }`;
+
+  try {
+    const checkResp = await fetch(`${adminUrl}/graphql.json`, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: checkMetafieldQuery,
+        variables: { id: orderGid },
+      }),
+    });
+
+    const checkData = await checkResp.json();
+    const existingTracking = checkData?.data?.order?.tracking?.value;
+    const existingReference = checkData?.data?.order?.reference?.value;
+
+    if (existingTracking || existingReference) {
+      console.log(`⚠️ SKIPPED: Label already exists for order ${order.name}`);
+      console.log(`Existing tracking: ${existingTracking}, reference: ${existingReference}`);
+      return json(200, {
+        ok: true,
+        skipped: true,
+        reason: "label-already-exists",
+        order: order.name,
+        tracking: existingTracking,
+        reference: existingReference,
+        message: "Label already created for this order (prevents duplicates)"
+      });
+    }
+  } catch (error) {
+    console.error("Error checking for existing label:", error);
+    // Continue anyway - better to risk duplicate than block legitimate request
+  }
+
   const SENDER = SENDERS[senderCode as keyof typeof SENDERS];
 
   const to = order.shipping_address;
