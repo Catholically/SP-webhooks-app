@@ -152,7 +152,7 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>, refer
   }
 }
 
-async function getOpenFulfillmentOrder(orderGid: string): Promise<string | null> {
+async function getAllOpenFulfillmentOrders(orderGid: string): Promise<string[]> {
   const q = `
     query($id: ID!) {
       order(id: $id) {
@@ -176,21 +176,18 @@ async function getOpenFulfillmentOrder(orderGid: string): Promise<string | null>
 
   console.log("Available fulfillment orders:", fulfillmentOrders);
 
-  // First try to find an OPEN fulfillment order (not yet fulfilled)
-  const openFO = fulfillmentOrders.find((fo: any) => fo.status === "OPEN");
-  if (openFO) {
-    console.log("Found OPEN fulfillment order:", openFO.id, "Location:", openFO.assignedLocation?.name);
-    return openFO.id;
+  // Get ALL OPEN fulfillment orders (for multi-location orders)
+  const openFOs = fulfillmentOrders.filter((fo: any) => fo.status === "OPEN");
+  if (openFOs.length > 0) {
+    console.log(`Found ${openFOs.length} OPEN fulfillment order(s):`);
+    openFOs.forEach((fo: any) => {
+      console.log(`  - ${fo.id} at location: ${fo.assignedLocation?.name}`);
+    });
+    return openFOs.map((fo: any) => fo.id);
   }
 
-  // Fallback to first available if no OPEN found
-  const firstFO = fulfillmentOrders[0];
-  if (firstFO) {
-    console.log("Using first fulfillment order:", firstFO.id, "Status:", firstFO.status);
-    return firstFO.id;
-  }
-
-  return null;
+  console.log("No OPEN fulfillment orders found");
+  return [];
 }
 
 async function fulfill(foId: string, tracking: string, trackingUrl?: string, company?: string) {
@@ -324,23 +321,30 @@ export async function POST(req: Request) {
     }
   }
 
-  // Auto-fulfill the order with tracking information
-  // Cerca il primo fulfillment order OPEN (per gestire ordini multi-location)
-  // Usa courier_group per Shopify (es: "UPS" invece di "UPS STANDARD - PROMO")
-  console.log("[DEBUG] Looking for fulfillment order...");
-  const foId = await getOpenFulfillmentOrder(orderGid);
-  console.log("[DEBUG] Fulfillment Order ID found:", foId);
+  // Auto-fulfill ALL open fulfillment orders with tracking information
+  // This handles multi-location orders by fulfilling all locations with same tracking
+  // Uses courier_group for Shopify (e.g., "UPS" instead of "UPS STANDARD - PROMO")
+  console.log("[DEBUG] Looking for fulfillment orders...");
+  const foIds = await getAllOpenFulfillmentOrders(orderGid);
+  console.log(`[DEBUG] Found ${foIds.length} fulfillment order(s) to fulfill`);
 
-  if (foId) {
+  if (foIds.length > 0) {
     console.log("[DEBUG] Starting fulfillment with tracking:", tracking);
-    try {
-      await fulfill(foId, tracking, trackingUrl, courierGroup);
-      console.log("[DEBUG] ✅ Fulfillment completed successfully");
-    } catch (err) {
-      console.error("[DEBUG] ❌ Fulfillment error:", err);
+
+    // Fulfill all open fulfillment orders with the same tracking number
+    for (const foId of foIds) {
+      try {
+        await fulfill(foId, tracking, trackingUrl, courierGroup);
+        console.log(`[DEBUG] ✅ Fulfillment completed for ${foId}`);
+      } catch (err) {
+        console.error(`[DEBUG] ❌ Fulfillment error for ${foId}:`, err);
+        // Continue with other fulfillment orders even if one fails
+      }
     }
+
+    console.log(`[DEBUG] ✅ All fulfillments completed (${foIds.length} total)`);
   } else {
-    console.log("[DEBUG] ⚠️ No fulfillment order found - skipping fulfillment");
+    console.log("[DEBUG] ⚠️ No fulfillment orders found - skipping fulfillment");
   }
 
   // Process customs declaration (await to ensure it completes)
