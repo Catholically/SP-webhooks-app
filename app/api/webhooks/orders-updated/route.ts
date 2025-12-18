@@ -76,6 +76,7 @@ type ShopifyOrder = {
     city?: string;
     zip?: string;
     address1?: string;
+    address2?: string;
   };
   billing_address?: { phone?: string };
   customer?: {
@@ -541,6 +542,9 @@ export async function POST(req: Request) {
   const personName = (first(to.name, `${to.first_name || ""} ${to.last_name || ""}`.trim()) || "Customer")
     .substring(0, 27);
 
+  // Concatenate address1 and address2 (for apt/suite numbers)
+  const fullStreet = [to.address1, to.address2].filter(Boolean).join(", ");
+
   const sproBody: any = {
     merchant_reference: order.name, // critical to reconcile on webhook
     sender: {
@@ -561,7 +565,7 @@ export async function POST(req: Request) {
       province: receiverProvince,
       city: to.city,
       postcode: to.zip,
-      street: to.address1,
+      street: fullStreet,
     },
   };
 
