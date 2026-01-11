@@ -19,7 +19,7 @@ export async function logToGoogleSheets(data: ShippingLogData): Promise<void> {
   const credentialsJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const privateKey = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
-  const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID;
+  const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID?.trim();
 
   if (!spreadsheetId) {
     console.log('[Google Sheets] GOOGLE_SPREADSHEET_ID not configured, skipping logging');
