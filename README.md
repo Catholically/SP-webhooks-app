@@ -53,7 +53,8 @@ Integrazione **SpedirePro + Shopify** per automazione spedizioni internazionali.
 
 | Tag | Significato |
 |-----|-------------|
-| `LABEL-CREATED` | Etichetta creata con successo |
+| `LABEL-OK-MI` | Etichetta creata con successo da Milano |
+| `LABEL-OK-RM` | Etichetta creata con successo da Roma |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
 

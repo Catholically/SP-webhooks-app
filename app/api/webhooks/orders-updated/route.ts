@@ -671,9 +671,10 @@ export async function POST(req: Request) {
     return json(200, { ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
   }
 
-  // Label created successfully - update tags (remove MI-CREATE/RM-CREATE, add LABEL-CREATED)
+  // Label created successfully - update tags (remove MI-CREATE/RM-CREATE, add LABEL-OK-MI or LABEL-OK-RM)
+  const labelTag = `LABEL-OK-${senderCode}`;
   try {
-    await updateOrderTags(order.id, [usedTag], ["LABEL-CREATED"]);
+    await updateOrderTags(order.id, [usedTag], [labelTag]);
   } catch (error) {
     console.error("Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
