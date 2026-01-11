@@ -305,7 +305,6 @@ export async function POST(req: Request) {
   console.log("Metafields set successfully for order:", orderIdNum);
 
   // Log spedizione su Google Sheets (non bloccante - errori non interrompono il flusso)
-  const shippingPrice = body?.price ?? body?.cost ?? null;
   await logToGoogleSheets({
     orderNumber: merchantRef,
     shipmentId: body?.reference || '',
