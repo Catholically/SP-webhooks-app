@@ -4,6 +4,7 @@ export const runtime = "nodejs";
 import { handleCustomsDeclaration } from '@/lib/customs-handler';
 import { sendLabelEmail } from '@/lib/email-label';
 import { downloadAndUploadToGoogleDrive } from '@/lib/google-drive';
+import { logToGoogleSheets } from '@/lib/google-sheets';
 
 type SproWebhook = {
   update_type?: string;
@@ -302,6 +303,17 @@ export async function POST(req: Request) {
   await metafieldsSet(orderGid, metafields, body?.reference);
 
   console.log("Metafields set successfully for order:", orderIdNum);
+
+  // Log spedizione su Google Sheets (non bloccante - errori non interrompono il flusso)
+  const shippingPrice = body?.price ?? body?.cost ?? null;
+  await logToGoogleSheets({
+    orderNumber: merchantRef,
+    shipmentId: body?.reference || '',
+    trackingNumber: tracking,
+    courierName: courier,
+    shippingCost: shippingPrice,
+    labelUrl: permanentLabelUrl
+  }).catch(err => console.error('[Google Sheets] Logging failed:', err.message));
 
   // Check if order needs label email sent (set by MI-CREATE or MI-CREATE-NOD tags)
   if (permanentLabelUrl) {
