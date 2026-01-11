@@ -7,6 +7,8 @@ Integrazione **SpedirePro + Shopify** per automazione spedizioni internazionali.
 - Crea automaticamente etichette di spedizione tramite SpedirePro (UPS/FedEx)
 - Aggiorna gli ordini Shopify con tracking e URL lettera di vettura
 - Genera automaticamente dichiarazioni doganali per spedizioni extra-EU
+- **Logga ogni spedizione su Google Sheets** (stesso foglio di Easyship, Source="SpedirePro")
+- Salva le etichette su Google Drive (URL permanente)
 - Notifica via email le spedizioni MI- (Milano) con PDF allegato
 - Auto-fulfillment degli ordini completati
 
@@ -14,7 +16,7 @@ Integrazione **SpedirePro + Shopify** per automazione spedizioni internazionali.
 
 - **Next.js 14** + TypeScript
 - **Vercel** (hosting)
-- **APIs**: SpedirePro, Shopify GraphQL, Google Drive, Resend
+- **APIs**: SpedirePro, Shopify GraphQL, Google Drive, Google Sheets, Resend
 
 ---
 
@@ -88,9 +90,10 @@ Le spedizioni con tag `MI-*` inviano automaticamente una email a `denticristina@
    - Tracking number
    - URL lettera di vettura
    - Metafields spedirepro.*
-6. Auto-fulfillment ordine
-7. (Se extra-EU) Genera dichiarazione doganale su Google Drive
-8. (Se MI-*) Invia email notifica con PDF
+6. Logga su Google Sheets (Data, Order, Shipment ID, Tracking, Corriere, Costo, URL, Source)
+7. Auto-fulfillment ordine
+8. (Se extra-EU) Genera dichiarazione doganale su Google Drive
+9. (Se MI-*) Invia email notifica con PDF
 ```
 
 ---
@@ -130,6 +133,7 @@ SP-webhooks-app/
 │   ├── email-label.ts         # Email etichette MI-*
 │   ├── eu-countries.ts        # Lista paesi EU
 │   ├── google-drive.ts        # Upload Google Drive
+│   ├── google-sheets.ts       # Logging Google Sheets
 │   └── shopify-customs.ts     # Metafields Shopify
 ├── SETUP.md                   # Guida configurazione
 └── README.md                  # Questo file
