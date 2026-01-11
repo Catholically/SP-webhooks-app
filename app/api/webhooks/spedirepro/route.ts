@@ -310,7 +310,7 @@ export async function POST(req: Request) {
     shipmentId: body?.reference || '',
     trackingNumber: tracking,
     courierName: courier,
-    shippingCost: shippingPrice,
+    shippingCost: shippingPrice ?? null,
     labelUrl: permanentLabelUrl
   }).catch(err => console.error('[Google Sheets] Logging failed:', err.message));
 
