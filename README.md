@@ -53,10 +53,12 @@ Integrazione **SpedirePro + Shopify** per automazione spedizioni internazionali.
 
 | Tag | Significato |
 |-----|-------------|
-| `LABEL-OK-MI` | Etichetta creata con successo da Milano |
-| `LABEL-OK-RM` | Etichetta creata con successo da Roma |
+| `LABEL-OK-MI` | Etichetta creata con successo da Milano (usato anche per prevenire duplicati) |
+| `LABEL-OK-RM` | Etichetta creata con successo da Roma (usato anche per prevenire duplicati) |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
+
+> **Nota**: Il sistema ha protezione anti-duplicati a due livelli: controlla i tag `LABEL-OK-*` e i metafield `tracking`/`reference`.
 
 ---
 
@@ -89,12 +91,14 @@ Le spedizioni con tag `MI-*` inviano automaticamente una email a `denticristina@
 4. SpedirePro webhook → /api/webhooks/spedirepro
 5. Sistema aggiorna Shopify con:
    - Tracking number
-   - URL lettera di vettura
-   - Metafields spedirepro.*
-6. Logga su Google Sheets (Data, Order, Shipment ID, Tracking, Corriere, Costo, URL, Source)
-7. Auto-fulfillment ordine
-8. (Se extra-EU) Genera dichiarazione doganale su Google Drive
-9. (Se MI-*) Invia email notifica con PDF
+   - URL lettera di vettura (da Google Drive)
+   - Metafields spedirepro.* + custom.costo_spedizione
+   - Tag LABEL-OK-MI o LABEL-OK-RM
+6. Chiama SpedirePro API per recuperare costo spedizione
+7. Logga su Google Sheets (Data, Order, Shipment ID, Tracking, Corriere, Costo, URL, Source)
+8. Auto-fulfillment ordine
+9. (Se extra-EU) Genera dichiarazione doganale su Google Drive
+10. (Se MI-*) Invia email notifica con PDF
 ```
 
 ---
