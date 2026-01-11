@@ -27,6 +27,53 @@ type SproWebhook = {
 const json = (status: number, obj: unknown) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 
+const SPRO_API_BASE = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
+
+/**
+ * Recupera il prezzo della spedizione dall'API SpedirePro
+ * Endpoint: POST /shipment con reference
+ */
+async function getShipmentPrice(reference: string): Promise<number | null> {
+  const apiKey = process.env.SPRO_API_KEY;
+  if (!apiKey || !reference) {
+    console.log("[SpedirePro API] Missing API key or reference, skipping price fetch");
+    return null;
+  }
+
+  try {
+    console.log(`[SpedirePro API] Fetching price for reference: ${reference}`);
+
+    const response = await fetch(`${SPRO_API_BASE}/shipment`, {
+      method: "POST",
+      headers: {
+        "X-Api-Key": apiKey,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify({ reference }),
+    });
+
+    if (!response.ok) {
+      console.error(`[SpedirePro API] Error fetching shipment: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    const price = data?.price;
+
+    if (price !== undefined && price !== null) {
+      console.log(`[SpedirePro API] Found price: ${price} EUR`);
+      return typeof price === 'number' ? price : parseFloat(price);
+    }
+
+    console.log("[SpedirePro API] No price in response");
+    return null;
+  } catch (error) {
+    console.error("[SpedirePro API] Error:", error);
+    return null;
+  }
+}
+
 function adminBase() {
   const store = process.env.SHOPIFY_STORE || process.env.SHOPIFY_SHOP || "holy-trove";
   const ver = process.env.SHOPIFY_API_VERSION || "2025-10";
@@ -103,7 +150,7 @@ async function getOrderCustomerName(orderGid: string): Promise<string> {
          "Cliente";
 }
 
-async function metafieldsSet(orderGid: string, kv: Record<string, string>, reference?: string) {
+async function metafieldsSet(orderGid: string, kv: Record<string, string>, reference?: string, shippingCost?: number | null) {
   const entries = Object.entries(kv).map(([key, value]) => {
     // Determina il tipo corretto in base al campo
     let type = "single_line_text_field";
@@ -128,6 +175,17 @@ async function metafieldsSet(orderGid: string, kv: Record<string, string>, refer
       key: "reference",
       type: "single_line_text_field",
       value: reference,
+    });
+  }
+
+  // Add custom.costo_spedizione metafield (same as Easyship webhook)
+  if (shippingCost !== undefined && shippingCost !== null) {
+    entries.push({
+      ownerId: orderGid,
+      namespace: "custom",
+      key: "costo_spedizione",
+      type: "single_line_text_field",
+      value: shippingCost.toFixed(2),  // Solo numero, es. "12.35"
     });
   }
 
@@ -274,9 +332,15 @@ export async function POST(req: Request) {
   // Only add tracking URL metafield if it has value
   if (trackingUrl) metafields.tracking_url = trackingUrl;
 
-  // Add shipping price if available (try both 'price' and 'cost' fields)
-  const shippingPrice = body?.price ?? body?.cost;
-  if (shippingPrice !== undefined && shippingPrice !== null) {
+  // Get shipping price: first try webhook payload, then call SpedirePro API
+  let shippingPrice: number | null = body?.price ?? body?.cost ?? null;
+
+  if (shippingPrice === null && body?.reference) {
+    // Webhook doesn't include price, fetch it from SpedirePro API
+    shippingPrice = await getShipmentPrice(body.reference);
+  }
+
+  if (shippingPrice !== null) {
     metafields.shipping_price = String(shippingPrice);
   }
 
@@ -300,7 +364,7 @@ export async function POST(req: Request) {
     }
   }
 
-  await metafieldsSet(orderGid, metafields, body?.reference);
+  await metafieldsSet(orderGid, metafields, body?.reference, shippingPrice);
 
   console.log("Metafields set successfully for order:", orderIdNum);
 
