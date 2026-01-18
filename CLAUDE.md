@@ -1,6 +1,6 @@
 # CLAUDE.md - SP-webhooks-app
 
-> **Ultimo aggiornamento**: 2026-01-11
+> **Ultimo aggiornamento**: 2026-01-18
 
 ## Descrizione Progetto
 
@@ -45,11 +45,17 @@ Integrazione SpedirePro + Shopify per automazione spedizioni internazionali di H
 | `MI-DOG` | Solo doganale (richiede tracking esistente) |
 | `RM-DOG` | Solo doganale (richiede tracking esistente) |
 
+### Tag per Invio Etichetta via Email
+| Tag | Descrizione |
+|-----|-------------|
+| `LABEL` | Invia etichetta esistente via email a denticristina@gmail.com |
+
 ### Tag Automatici (aggiunti dal sistema)
 | Tag | Significato |
 |-----|-------------|
 | `LABEL-OK-MI` | Etichetta creata da Milano (previene duplicati) |
 | `LABEL-OK-RM` | Etichetta creata da Roma (previene duplicati) |
+| `LABEL-SENT` | Etichetta inviata via email |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
 

@@ -233,6 +233,44 @@ async function setOrderMetafield(orderId: number, namespace: string, key: string
   });
 }
 
+// Get metafield value from order
+async function getOrderMetafield(orderGid: string, namespace: string, key: string): Promise<string | null> {
+  const store = env("SHOPIFY_STORE") || env("SHOPIFY_SHOP") || "holy-trove";
+  const token = env("SHOPIFY_ADMIN_TOKEN") || env("SHOPIFY_ACCESS_TOKEN") || "";
+  const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
+  const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
+
+  const query = `
+    query getMetafield($id: ID!, $namespace: String!, $key: String!) {
+      order(id: $id) {
+        metafield(namespace: $namespace, key: $key) {
+          value
+        }
+      }
+    }
+  `;
+
+  try {
+    const resp = await fetch(`${adminUrl}/graphql.json`, {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        variables: { id: orderGid, namespace, key },
+      }),
+    });
+
+    const data = await resp.json();
+    return data?.data?.order?.metafield?.value || null;
+  } catch (error) {
+    console.error(`Failed to get metafield ${namespace}.${key}:`, error);
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   const url = new URL(req.url);
   const debug = url.searchParams.get("debug") === "1";
@@ -377,6 +415,77 @@ export async function POST(req: Request) {
         });
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📧 LABEL TAG HANDLING - Send existing label via email
+  // ═══════════════════════════════════════════════════════════════════════════
+  const hasLabelTag = tags.includes("LABEL");
+
+  if (hasLabelTag) {
+    console.log(`📧 [Send Label] Processing LABEL tag for order ${order.name}`);
+
+    const orderIdStr = String(order.id);
+    const orderGid = `gid://shopify/Order/${orderIdStr}`;
+
+    // 1. Query label URL from metafield
+    const labelUrl = await getOrderMetafield(orderGid, "spedirepro", "ldv_url") ||
+                     await getOrderMetafield(orderGid, "spedirepro", "label_url");
+
+    if (!labelUrl) {
+      console.error(`❌ [Send Label] No label URL found for order ${order.name}`);
+      return json(200, {
+        ok: false,
+        error: "no-label-url",
+        message: "Cannot send label: no label URL in metafields",
+        tag: "LABEL",
+        order: order.name,
+      });
+    }
+
+    console.log(`📧 [Send Label] Found label URL: ${labelUrl}`);
+
+    // 2. Send email with label and shipping address
+    const { sendLabelEmail } = await import('@/lib/email-label');
+
+    const success = await sendLabelEmail(
+      order.name,
+      labelUrl,
+      {
+        name: order.shipping_address?.name,
+        address1: order.shipping_address?.address1,
+        address2: order.shipping_address?.address2,
+        city: order.shipping_address?.city,
+        zip: order.shipping_address?.zip,
+        province_code: order.shipping_address?.province_code,
+        country_code: order.shipping_address?.country_code,
+      },
+      'denticristina@gmail.com'
+    );
+
+    if (!success) {
+      console.error(`❌ [Send Label] Failed to send email for order ${order.name}`);
+      return json(200, {
+        ok: false,
+        error: "email-send-failed",
+        message: "Failed to send label email",
+        tag: "LABEL",
+        order: order.name,
+      });
+    }
+
+    // 3. Update tags: remove LABEL, add LABEL-SENT
+    await updateOrderTags(order.id, ["LABEL"], ["LABEL-SENT"]);
+
+    console.log(`✅ [Send Label] Email sent successfully for order ${order.name}`);
+
+    return json(200, {
+      ok: true,
+      action: "label-email-sent",
+      order: order.name,
+      recipient: 'denticristina@gmail.com',
+      labelUrl,
+    });
   }
 
   let senderCode: string | null = null;
