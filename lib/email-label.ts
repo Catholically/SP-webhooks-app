@@ -36,16 +36,25 @@ export async function sendLabelEmail(
   const sender = 'noreply@resend.catholically.com'; // Verified domain
 
   try {
-    console.log(`[Email Label] Downloading PDF from Google Drive: ${labelUrl}`);
+    console.log(`[Email Label] Downloading PDF from: ${labelUrl}`);
 
-    // Download PDF from Google Drive
-    // Convert Google Drive view URL to direct download URL
-    const fileIdMatch = labelUrl.match(/\/d\/([^\/]+)/);
-    if (!fileIdMatch) {
-      throw new Error('Invalid Google Drive URL format');
+    // Determine download URL based on source
+    let downloadUrl: string;
+
+    if (labelUrl.includes('drive.google.com')) {
+      // Google Drive URL - convert to direct download
+      const fileIdMatch = labelUrl.match(/\/d\/([^\/]+)/);
+      if (!fileIdMatch) {
+        throw new Error('Invalid Google Drive URL format');
+      }
+      const fileId = fileIdMatch[1];
+      downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+      console.log(`[Email Label] Google Drive detected, download URL: ${downloadUrl}`);
+    } else {
+      // Direct URL (Easyship or other) - use as-is
+      downloadUrl = labelUrl;
+      console.log(`[Email Label] Direct URL detected, using as-is`);
     }
-    const fileId = fileIdMatch[1];
-    const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
 
     const response = await fetch(downloadUrl);
     if (!response.ok) {
