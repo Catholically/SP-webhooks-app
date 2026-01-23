@@ -5,7 +5,7 @@
 
 import { requiresCustomsDeclaration, isUSA, isEUCountry, canAutoProcessLabel } from './eu-countries';
 import { fetchOrderCustomsData } from './shopify-customs';
-import { createCustomsDeclarationFromOrder } from './customs-pdf';
+import { createCustomsDocumentsFromOrder, DOCUMENT_TYPE_INVOICE, DOCUMENT_TYPE_DECLARATION } from './customs-pdf';
 import { uploadToGoogleDrive } from './google-drive';
 import { sendCustomsErrorAlert } from './email-alerts';
 
@@ -126,14 +126,19 @@ async function fetchOrderShippingInfo(orderId: string): Promise<OrderShippingInf
 }
 
 /**
- * Upload customs declaration to SpedirePro
+ * Upload a single customs document to SpedirePro (new API)
+ * Step 1: Upload file to /api/documents/dogana/upload
+ * Step 2: Confirm with /api/user/shipment/customs-uploaded
  */
-async function uploadToSpedirePro(
+async function uploadDocumentToSpedirePro(
   reference: string,
-  pdfBuffer: Buffer
+  tracking: string,
+  pdfBuffer: Buffer,
+  documentType: number,
+  filename: string
 ): Promise<boolean> {
   const SPRO_API_KEY = process.env.SPRO_API_KEY;
-  const SPRO_API_BASE = process.env.SPRO_API_BASE || "https://www.spedirepro.com/public-api/v1";
+  const SPRO_WEB_BASE = "https://www.spedirepro.com";
 
   if (!SPRO_API_KEY) {
     console.error('[Customs] SPRO_API_KEY not configured');
@@ -141,13 +146,14 @@ async function uploadToSpedirePro(
   }
 
   try {
-    // Create FormData for multipart upload
+    // Step 1: Upload the file
+    console.log(`[Customs] Uploading document type ${documentType} for reference ${reference}...`);
     const formData = new FormData();
     const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
-    formData.append('document', blob, 'customs.pdf');
+    formData.append('document', blob, filename);
 
-    const response = await fetch(
-      `${SPRO_API_BASE}/shipment/${reference}/upload`,
+    const uploadResponse = await fetch(
+      `${SPRO_WEB_BASE}/api/documents/dogana/upload`,
       {
         method: 'POST',
         headers: {
@@ -157,13 +163,39 @@ async function uploadToSpedirePro(
       }
     );
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[Customs] Failed to upload to SpedirePro: ${response.status} ${errorText}`);
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      console.error(`[Customs] Failed to upload file to SpedirePro: ${uploadResponse.status} ${errorText}`);
       return false;
     }
 
-    console.log(`[Customs] Successfully uploaded to SpedirePro reference ${reference}`);
+    console.log(`[Customs] File uploaded successfully, confirming...`);
+
+    // Step 2: Confirm the upload with document type
+    const filePath = `${tracking}_${documentType}_${reference}.pdf`;
+    const confirmResponse = await fetch(
+      `${SPRO_WEB_BASE}/api/user/shipment/customs-uploaded`,
+      {
+        method: 'POST',
+        headers: {
+          'X-Api-Key': SPRO_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          reference: reference,
+          document_type: documentType,
+          file_path: filePath,
+        }),
+      }
+    );
+
+    if (!confirmResponse.ok) {
+      const errorText = await confirmResponse.text();
+      console.error(`[Customs] Failed to confirm upload to SpedirePro: ${confirmResponse.status} ${errorText}`);
+      return false;
+    }
+
+    console.log(`[Customs] ✅ Document type ${documentType} uploaded and confirmed for reference ${reference}`);
     return true;
   } catch (error) {
     console.error('[Customs] Error uploading to SpedirePro:', error);
@@ -172,11 +204,37 @@ async function uploadToSpedirePro(
 }
 
 /**
- * Update Shopify order with customs document URL
+ * Upload both customs documents to SpedirePro
+ * document_type 1 = Fattura commerciale
+ * document_type 2 = Dichiarazione di Libera Esportazione
  */
-async function updateCustomsMetafield(
+async function uploadToSpedirePro(
+  reference: string,
+  tracking: string,
+  invoiceBuffer: Buffer,
+  declarationBuffer: Buffer
+): Promise<{ invoiceSuccess: boolean; declarationSuccess: boolean }> {
+  console.log(`[Customs] Uploading both documents to SpedirePro for reference ${reference}...`);
+
+  const [invoiceSuccess, declarationSuccess] = await Promise.all([
+    uploadDocumentToSpedirePro(reference, tracking, invoiceBuffer, DOCUMENT_TYPE_INVOICE, `invoice_${reference}.pdf`),
+    uploadDocumentToSpedirePro(reference, tracking, declarationBuffer, DOCUMENT_TYPE_DECLARATION, `declaration_${reference}.pdf`),
+  ]);
+
+  console.log(`[Customs] Upload results - Invoice: ${invoiceSuccess ? '✅' : '❌'}, Declaration: ${declarationSuccess ? '✅' : '❌'}`);
+
+  return { invoiceSuccess, declarationSuccess };
+}
+
+/**
+ * Update Shopify order with BOTH customs document URLs
+ * custom.invoice = Fattura commerciale
+ * custom.doganale = Dichiarazione di libera esportazione
+ */
+async function updateCustomsMetafields(
   orderId: string,
-  driveUrl: string
+  invoiceUrl: string,
+  declarationUrl: string
 ): Promise<void> {
   const store = process.env.SHOPIFY_STORE || process.env.SHOPIFY_SHOP || "holy-trove";
   const ver = process.env.SHOPIFY_API_VERSION || "2025-10";
@@ -188,7 +246,7 @@ async function updateCustomsMetafield(
     : `gid://shopify/Order/${orderId}`;
 
   const query = `
-    mutation setCustomsMetafield($metafields: [MetafieldsSetInput!]!) {
+    mutation setCustomsMetafields($metafields: [MetafieldsSetInput!]!) {
       metafieldsSet(metafields: $metafields) {
         metafields { key value }
         userErrors { field message }
@@ -201,9 +259,16 @@ async function updateCustomsMetafield(
       {
         ownerId: orderGid,
         namespace: 'custom',
-        key: 'dichiarazione_doganale',
+        key: 'invoice',
         type: 'url',
-        value: driveUrl,
+        value: invoiceUrl,
+      },
+      {
+        ownerId: orderGid,
+        namespace: 'custom',
+        key: 'doganale',
+        type: 'url',
+        value: declarationUrl,
       },
     ],
   };
@@ -219,9 +284,9 @@ async function updateCustomsMetafield(
 
   const result = await response.json();
   if (result.data?.metafieldsSet?.userErrors?.length > 0) {
-    console.error('[Customs] Failed to set customs metafield:', result.data.metafieldsSet.userErrors);
+    console.error('[Customs] Failed to set customs metafields:', result.data.metafieldsSet.userErrors);
   } else {
-    console.log('[Customs] Successfully set custom.doganale metafield');
+    console.log('[Customs] Successfully set custom.invoice and custom.doganale metafields');
   }
 }
 
@@ -270,33 +335,41 @@ export async function handleCustomsDeclaration(
       return;
     }
 
-    // Step 4: Generate PDF
-    console.log('[Customs] Generating customs declaration PDF...');
-    const pdfBuffer = await createCustomsDeclarationFromOrder(
+    // Step 4: Generate BOTH PDFs (invoice + declaration)
+    console.log('[Customs] Generating customs declaration PDFs...');
+    const { invoice, declaration } = await createCustomsDocumentsFromOrder(
       orderData,
       tracking,
       shippingInfo.receiverName,
       shippingInfo.receiverAddress
     );
 
-    console.log(`[Customs] PDF generated, size: ${pdfBuffer.length} bytes`);
+    console.log(`[Customs] PDFs generated - Invoice: ${invoice.length} bytes, Declaration: ${declaration.length} bytes`);
 
-    // Step 5: Upload to SpedirePro
-    console.log('[Customs] Uploading to SpedirePro...');
-    const sproSuccess = await uploadToSpedirePro(reference, pdfBuffer);
-    if (!sproSuccess) {
-      console.warn('[Customs] Failed to upload to SpedirePro, but continuing with Drive upload');
+    // Step 5: Upload BOTH documents to SpedirePro (new API with document_type)
+    console.log('[Customs] Uploading to SpedirePro (new API)...');
+    const sproResult = await uploadToSpedirePro(reference, tracking, invoice, declaration);
+    if (!sproResult.invoiceSuccess || !sproResult.declarationSuccess) {
+      console.warn(`[Customs] SpedirePro upload incomplete - Invoice: ${sproResult.invoiceSuccess}, Declaration: ${sproResult.declarationSuccess}`);
     }
 
-    // Step 6: Upload to Google Drive with order number as filename
+    // Step 6: Upload BOTH PDFs to Google Drive with different suffixes
     console.log('[Customs] Uploading to Google Drive...');
     const orderNumber = orderName.replace('#', ''); // e.g., "35622182025"
-    const driveUrl = await uploadToGoogleDrive(pdfBuffer, orderNumber, 'customs');
-    console.log(`[Customs] Uploaded to Google Drive: ${driveUrl}`);
 
-    // Step 7: Update Shopify metafield custom.doganale
-    console.log('[Customs] Updating Shopify metafield...');
-    await updateCustomsMetafield(orderId, driveUrl);
+    // Upload invoice with _inv suffix
+    const invoiceDriveUrl = await uploadToGoogleDrive(invoice, `${orderNumber}_inv`, 'customs');
+    console.log(`[Customs] Uploaded invoice to Google Drive: ${invoiceDriveUrl}`);
+
+    // Upload declaration with _dog suffix
+    const declarationDriveUrl = await uploadToGoogleDrive(declaration, `${orderNumber}_dog`, 'customs');
+    console.log(`[Customs] Uploaded declaration to Google Drive: ${declarationDriveUrl}`);
+
+    // Step 7: Update BOTH Shopify metafields
+    // custom.invoice = Fattura commerciale (_inv)
+    // custom.doganale = Dichiarazione di libera esportazione (_dog)
+    console.log('[Customs] Updating Shopify metafields...');
+    await updateCustomsMetafields(orderId, invoiceDriveUrl, declarationDriveUrl);
 
     console.log(`[Customs] ✅ Customs declaration completed successfully for order ${orderName}`);
   } catch (error) {

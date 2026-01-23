@@ -64,8 +64,9 @@ async function ensureFolderPath(
 /**
  * Upload a PDF file to Google Drive with date-based folder structure
  * @param pdfBuffer - PDF file as Buffer
- * @param fileName - Name of the file (without .pdf extension) - typically order number
- * @param type - Type of document ('label' -> fileName.pdf, 'customs' -> fileName_d.pdf)
+ * @param fileName - Name of the file (without .pdf extension) - typically order number or order number with suffix
+ * @param type - Type of document ('label' for shipping labels, 'customs' for customs documents)
+ *               Note: For customs, pass the full filename with suffix (e.g., "35622182025_inv" or "35622182025_dog")
  * @returns Google Drive file URL
  */
 export async function uploadToGoogleDrive(
@@ -105,10 +106,11 @@ export async function uploadToGoogleDrive(
   // Convert buffer to readable stream
   const stream = Readable.from(pdfBuffer);
 
-  // Determine final filename based on type
-  const finalFileName = type === 'label'
-    ? `${fileName}.pdf`           // e.g., 35622182025.pdf (label)
-    : `${fileName}_d.pdf`;        // e.g., 35622182025_d.pdf (customs)
+  // Just add .pdf extension - caller is responsible for the suffix
+  // Examples: "35622182025" -> "35622182025.pdf" (label)
+  //           "35622182025_inv" -> "35622182025_inv.pdf" (invoice)
+  //           "35622182025_dog" -> "35622182025_dog.pdf" (declaration)
+  const finalFileName = `${fileName}.pdf`;
 
   // Upload file to Google Drive
   const fileMetadata = {
@@ -154,8 +156,8 @@ export async function uploadToGoogleDrive(
 /**
  * Download PDF from URL and upload to Google Drive
  * @param url - URL to download PDF from
- * @param fileName - Name for the file (without .pdf extension) - typically order number
- * @param type - Type of document ('label' -> fileName.pdf, 'customs' -> fileName_d.pdf)
+ * @param fileName - Name for the file (without .pdf extension) - typically order number or with suffix
+ * @param type - Type of document ('label' for shipping labels, 'customs' for customs documents)
  * @returns Google Drive file URL
  */
 export async function downloadAndUploadToGoogleDrive(
