@@ -229,7 +229,7 @@ async function uploadToSpedirePro(
 /**
  * Update Shopify order with BOTH customs document URLs
  * custom.invoice = Fattura commerciale
- * custom.doganale = Dichiarazione di libera esportazione
+ * custom.dichiarazione_doganale = Dichiarazione di libera esportazione
  */
 async function updateCustomsMetafields(
   orderId: string,
@@ -266,7 +266,7 @@ async function updateCustomsMetafields(
       {
         ownerId: orderGid,
         namespace: 'custom',
-        key: 'doganale',
+        key: 'dichiarazione_doganale',
         type: 'url',
         value: declarationUrl,
       },
@@ -286,7 +286,7 @@ async function updateCustomsMetafields(
   if (result.data?.metafieldsSet?.userErrors?.length > 0) {
     console.error('[Customs] Failed to set customs metafields:', result.data.metafieldsSet.userErrors);
   } else {
-    console.log('[Customs] Successfully set custom.invoice and custom.doganale metafields');
+    console.log('[Customs] Successfully set custom.invoice and custom.dichiarazione_doganale metafields');
   }
 }
 
@@ -378,10 +378,10 @@ export async function handleCustomsDeclaration(
 
     // Step 7: Update BOTH Shopify metafields
     // custom.invoice = Fattura commerciale (_inv)
-    // custom.doganale = Dichiarazione di libera esportazione (_dog)
+    // custom.dichiarazione_doganale = Dichiarazione di libera esportazione (_dog)
     console.log('[Customs] ========== SHOPIFY METAFIELDS DEBUG ==========');
     console.log('[Customs] Setting custom.invoice:', invoiceDriveUrl);
-    console.log('[Customs] Setting custom.doganale:', declarationDriveUrl);
+    console.log('[Customs] Setting custom.dichiarazione_doganale:', declarationDriveUrl);
     await updateCustomsMetafields(orderId, invoiceDriveUrl, declarationDriveUrl);
 
     console.log(`[Customs] ✅ Customs declaration completed successfully for order ${orderName}`);
