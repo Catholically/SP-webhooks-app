@@ -80,7 +80,8 @@ Il sistema ha **due livelli** di protezione contro webhook duplicati:
 | spedirepro | shipping_price | Costo spedizione EUR |
 | spro | reference | Reference (duplicato) |
 | custom | costo_spedizione | Costo EUR (usato da Shopify) |
-| custom | doganale | URL dichiarazione doganale |
+| custom | invoice | URL fattura commerciale (type: url) |
+| custom | dichiarazione_doganale | URL dichiarazione libera esportazione (type: url) |
 
 ## Variabili Ambiente
 
