@@ -409,6 +409,19 @@ export async function POST(req: Request) {
   // 📧 LABEL TAG HANDLING - Send existing label via email
   // ═══════════════════════════════════════════════════════════════════════════
   const hasLabelTag = tags.includes("LABEL");
+  const hasLabelSentTag = tags.includes("LABEL-SENT");
+
+  // Skip if LABEL-SENT already exists (prevent duplicate emails)
+  if (hasLabelTag && hasLabelSentTag) {
+    console.log(`⚠️ [Send Label] SKIPPED: Order ${order.name} already has LABEL-SENT tag (duplicate prevention)`);
+    return json(200, {
+      ok: true,
+      skipped: true,
+      reason: "label-sent-tag-exists",
+      order: order.name,
+      message: "Label email already sent (LABEL-SENT tag found)"
+    });
+  }
 
   if (hasLabelTag) {
     console.log(`📧 [Send Label] Processing LABEL tag for order ${order.name}`);
