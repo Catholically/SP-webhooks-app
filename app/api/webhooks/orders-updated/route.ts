@@ -824,6 +824,17 @@ export async function POST(req: Request) {
     // Don't fail the whole request if tag update fails
   }
 
+  // Save account type (DDU or DDP) in metafield for webhook to use correct API key
+  try {
+    const accountTypeValue = isDDU ? "DDU" : "DDP";
+    console.log(`Setting account_type metafield to ${accountTypeValue} for order ${order.name}`);
+    await setOrderMetafield(order.id, "spedirepro", "account_type", accountTypeValue);
+    console.log(`✅ Account type metafield set successfully`);
+  } catch (error) {
+    console.error("Failed to set account_type metafield:", error);
+    // Don't fail the whole request if metafield set fails
+  }
+
   // For MI orders, set metafield to trigger email sending
   if (senderCode === "MI") {
     try {

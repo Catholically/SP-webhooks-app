@@ -36,16 +36,20 @@ const SPRO_API_BASE = process.env.SPRO_API_BASE || "https://www.spedirepro.com/p
 /**
  * Recupera il prezzo della spedizione dall'API SpedirePro
  * Endpoint: POST /shipment con reference
+ * Uses correct API key based on account type (DDU or DDP)
  */
-async function getShipmentPrice(reference: string): Promise<number | null> {
-  const apiKey = process.env.SPRO_API_KEY;
+async function getShipmentPrice(reference: string, accountType: string | null): Promise<number | null> {
+  // Select API key based on account type
+  const isDDU = accountType === "DDU";
+  const apiKey = isDDU ? process.env.SPRO_API_KEY_NODDP : process.env.SPRO_API_KEY;
+
   if (!apiKey || !reference) {
-    console.log("[SpedirePro API] Missing API key or reference, skipping price fetch");
+    console.log(`[SpedirePro API] Missing API key (${isDDU ? 'DDU' : 'DDP'}) or reference, skipping price fetch`);
     return null;
   }
 
   try {
-    console.log(`[SpedirePro API] Fetching price for reference: ${reference}`);
+    console.log(`[SpedirePro API] Fetching price for reference: ${reference} (account: ${accountType || 'DDP'})`);
 
     const response = await fetch(`${SPRO_API_BASE}/shipment`, {
       method: "POST",
@@ -59,6 +63,11 @@ async function getShipmentPrice(reference: string): Promise<number | null> {
 
     if (!response.ok) {
       console.error(`[SpedirePro API] Error fetching shipment: ${response.status}`);
+      // Try with the other API key if first one fails
+      if (!isDDU) {
+        console.log("[SpedirePro API] Retrying with DDU API key...");
+        return getShipmentPrice(reference, "DDU");
+      }
       return null;
     }
 
@@ -353,12 +362,16 @@ export async function POST(req: Request) {
   // Only add tracking URL metafield if it has value
   if (trackingUrl) metafields.tracking_url = trackingUrl;
 
+  // Get account type from metafield (saved when label was created)
+  const accountType = await getOrderMetafield(orderGid, "spedirepro", "account_type");
+  console.log(`[SpedirePro] Account type for order ${merchantRef}: ${accountType || 'DDP (default)'}`);
+
   // Get shipping price: first try webhook payload, then call SpedirePro API
   let shippingPrice: number | null = body?.price ?? body?.cost ?? null;
 
   if (shippingPrice === null && body?.reference) {
     // Webhook doesn't include price, fetch it from SpedirePro API
-    shippingPrice = await getShipmentPrice(body.reference);
+    shippingPrice = await getShipmentPrice(body.reference, accountType);
   }
 
   if (shippingPrice !== null) {
@@ -460,7 +473,8 @@ export async function POST(req: Request) {
       console.log('[Customs] User will manually generate customs declaration using RM-DOG or MI-DOG tag');
     } else {
       try {
-        await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference);
+        // Pass accountType to customs handler so it uses correct API key
+        await handleCustomsDeclaration(orderIdNum, merchantRef, tracking, reference, accountType);
       } catch (err) {
         console.error('[Webhook] Error in customs processing:', err);
         // Don't fail the webhook - just log the error

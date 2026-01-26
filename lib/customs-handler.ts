@@ -134,18 +134,21 @@ async function uploadDocumentToSpedirePro(
   reference: string,
   pdfBuffer: Buffer,
   documentType: string,  // 'invoice' or 'export_declaration'
-  filename: string
+  filename: string,
+  accountType: string | null = null  // 'DDU' or 'DDP' (null defaults to DDP)
 ): Promise<boolean> {
-  const SPRO_API_KEY = process.env.SPRO_API_KEY;
+  // Select correct API key based on account type
+  const isDDU = accountType === "DDU";
+  const apiKey = isDDU ? process.env.SPRO_API_KEY_NODDP : process.env.SPRO_API_KEY;
   const SPRO_API_BASE = "https://www.spedirepro.com/public-api/v1";
 
-  if (!SPRO_API_KEY) {
-    console.error('[Customs] SPRO_API_KEY not configured');
+  if (!apiKey) {
+    console.error(`[Customs] ${isDDU ? 'SPRO_API_KEY_NODDP' : 'SPRO_API_KEY'} not configured`);
     return false;
   }
 
   try {
-    console.log(`[Customs] Uploading document type "${documentType}" for reference ${reference}...`);
+    console.log(`[Customs] Uploading document type "${documentType}" for reference ${reference} (account: ${accountType || 'DDP'})...`);
 
     const formData = new FormData();
     const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
@@ -157,7 +160,7 @@ async function uploadDocumentToSpedirePro(
       {
         method: 'POST',
         headers: {
-          'X-Api-Key': SPRO_API_KEY,
+          'X-Api-Key': apiKey,
         },
         body: formData,
       }
@@ -185,13 +188,14 @@ async function uploadDocumentToSpedirePro(
 async function uploadToSpedirePro(
   reference: string,
   invoiceBuffer: Buffer,
-  declarationBuffer: Buffer
+  declarationBuffer: Buffer,
+  accountType: string | null = null
 ): Promise<{ invoiceSuccess: boolean; declarationSuccess: boolean }> {
-  console.log(`[Customs] Uploading both documents to SpedirePro for reference ${reference}...`);
+  console.log(`[Customs] Uploading both documents to SpedirePro for reference ${reference} (account: ${accountType || 'DDP'})...`);
 
   const [invoiceSuccess, declarationSuccess] = await Promise.all([
-    uploadDocumentToSpedirePro(reference, invoiceBuffer, DOCUMENT_TYPE_INVOICE, `invoice_${reference}.pdf`),
-    uploadDocumentToSpedirePro(reference, declarationBuffer, DOCUMENT_TYPE_DECLARATION, `declaration_${reference}.pdf`),
+    uploadDocumentToSpedirePro(reference, invoiceBuffer, DOCUMENT_TYPE_INVOICE, `invoice_${reference}.pdf`, accountType),
+    uploadDocumentToSpedirePro(reference, declarationBuffer, DOCUMENT_TYPE_DECLARATION, `declaration_${reference}.pdf`, accountType),
   ]);
 
   console.log(`[Customs] Upload results - Invoice: ${invoiceSuccess ? '✅' : '❌'}, Declaration: ${declarationSuccess ? '✅' : '❌'}`);
@@ -266,12 +270,14 @@ async function updateCustomsMetafields(
 /**
  * Main customs declaration handler
  * Called after label creation and tracking number is received
+ * @param accountType - 'DDU' or 'DDP' (null defaults to DDP) - used to select correct SpedirePro API key
  */
 export async function handleCustomsDeclaration(
   orderId: string,
   orderName: string,
   tracking: string,
-  reference: string
+  reference: string,
+  accountType: string | null = null
 ): Promise<void> {
   console.log(`[Customs] Starting customs declaration check for order ${orderName}`);
 
@@ -322,8 +328,9 @@ export async function handleCustomsDeclaration(
     // Step 5: Upload BOTH documents to SpedirePro (new API - January 2026)
     console.log('[Customs] ========== SPEDIREPRO UPLOAD DEBUG ==========');
     console.log('[Customs] Reference:', reference);
+    console.log('[Customs] Account type:', accountType || 'DDP (default)');
     console.log('[Customs] Uploading to SpedirePro (new API v1)...');
-    const sproResult = await uploadToSpedirePro(reference, invoice, declaration);
+    const sproResult = await uploadToSpedirePro(reference, invoice, declaration, accountType);
     console.log('[Customs] SpedirePro upload result:', sproResult);
     if (!sproResult.invoiceSuccess || !sproResult.declarationSuccess) {
       console.warn(`[Customs] ⚠️ SpedirePro upload incomplete - Invoice: ${sproResult.invoiceSuccess}, Declaration: ${sproResult.declarationSuccess}`);
