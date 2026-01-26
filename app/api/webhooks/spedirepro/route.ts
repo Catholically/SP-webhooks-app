@@ -20,8 +20,12 @@ type SproWebhook = {
   exception_status?: number;
   tracking_url?: string;
   label?: { link?: string; expire_at?: string };
-  price?: number;  // Shipping cost/price
-  cost?: number;   // Alternative field name
+  label_url?: string;     // Alternative: label URL at root level
+  ldv?: string;           // Alternative: Italian "lettera di vettura"
+  ldv_url?: string;       // Alternative: LDV URL
+  document_url?: string;  // Alternative: generic document URL
+  price?: number;         // Shipping cost/price
+  cost?: number;          // Alternative field name
 };
 
 const json = (status: number, obj: unknown) =>
@@ -293,9 +297,26 @@ export async function POST(req: Request) {
   const merchantRef = body?.merchant_reference || "";
   const tracking = body?.tracking || "";
   const trackingUrl = body?.tracking_url || body?.label?.link || "";
-  const labelUrl = body?.label?.link || "";
+
+  // Try multiple possible locations for label URL (SpedirePro may have changed payload structure)
+  const labelUrl = body?.label?.link || body?.label_url || body?.ldv || body?.ldv_url || body?.document_url || "";
+
   const courier = body?.courier || body?.courier_group || "UPS"; // Nome completo per metafields
   const courierGroup = body?.courier_group || body?.courier?.split(" ")[0] || "UPS"; // Nome standard per Shopify
+
+  // Enhanced logging to debug payload structure
+  console.log("========== SPEDIREPRO WEBHOOK DEBUG ==========");
+  console.log("Full payload keys:", Object.keys(body || {}));
+  console.log("Label object:", JSON.stringify(body?.label, null, 2));
+  console.log("Alternative label fields:", {
+    "label?.link": body?.label?.link,
+    "label_url": body?.label_url,
+    "ldv": body?.ldv,
+    "ldv_url": body?.ldv_url,
+    "document_url": body?.document_url,
+  });
+  console.log("Final labelUrl resolved:", labelUrl || "(EMPTY - THIS IS THE PROBLEM!)");
+  console.log("==============================================");
 
   console.log("Extracted values:", {
     merchantRef,
@@ -348,7 +369,8 @@ export async function POST(req: Request) {
   let permanentLabelUrl = labelUrl; // Fallback to original URL
   if (labelUrl) {
     try {
-      console.log("[Label Storage] Downloading and uploading label to Google Drive...");
+      console.log("[Label Storage] ✅ Label URL found, downloading and uploading to Google Drive...");
+      console.log("[Label Storage] Source URL:", labelUrl);
       const orderNumber = merchantRef.replace('#', ''); // e.g., "35622182025"
       permanentLabelUrl = await downloadAndUploadToGoogleDrive(labelUrl, orderNumber, 'label');
       console.log("[Label Storage] ✅ Label stored on Google Drive:", permanentLabelUrl);
@@ -362,6 +384,10 @@ export async function POST(req: Request) {
       metafields.label_url = labelUrl;
       metafields.ldv_url = labelUrl;
     }
+  } else {
+    console.error("[Label Storage] ⚠️ NO LABEL URL IN WEBHOOK PAYLOAD!");
+    console.error("[Label Storage] This means SpedirePro did not send a label link.");
+    console.error("[Label Storage] Metafields will be set with EMPTY label URLs.");
   }
 
   await metafieldsSet(orderGid, metafields, body?.reference, shippingPrice);

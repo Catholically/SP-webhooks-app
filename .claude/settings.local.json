@@ -7,7 +7,8 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd LABEL tag feature to send existing labels via email\n\n- Add shippingAddress parameter to sendLabelEmail\\(\\) function\n- New email template with shipping details in Italian when address provided\n- Add LABEL tag handler in orders-updated webhook\n- Handler queries label URL from metafield and sends email\n- Tags update: LABEL -> LABEL-SENT after successful send\n- Fix spedirepro/route.ts to pass undefined for new parameter\n- Update CLAUDE.md documentation\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git push)",
       "Bash(vercel:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(npx vercel:*)"
     ]
   }
 }

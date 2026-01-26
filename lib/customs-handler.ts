@@ -347,28 +347,41 @@ export async function handleCustomsDeclaration(
     console.log(`[Customs] PDFs generated - Invoice: ${invoice.length} bytes, Declaration: ${declaration.length} bytes`);
 
     // Step 5: Upload BOTH documents to SpedirePro (new API with document_type)
+    console.log('[Customs] ========== SPEDIREPRO UPLOAD DEBUG ==========');
+    console.log('[Customs] Reference:', reference);
+    console.log('[Customs] Tracking:', tracking);
     console.log('[Customs] Uploading to SpedirePro (new API)...');
     const sproResult = await uploadToSpedirePro(reference, tracking, invoice, declaration);
+    console.log('[Customs] SpedirePro upload result:', sproResult);
     if (!sproResult.invoiceSuccess || !sproResult.declarationSuccess) {
-      console.warn(`[Customs] SpedirePro upload incomplete - Invoice: ${sproResult.invoiceSuccess}, Declaration: ${sproResult.declarationSuccess}`);
+      console.warn(`[Customs] ⚠️ SpedirePro upload incomplete - Invoice: ${sproResult.invoiceSuccess}, Declaration: ${sproResult.declarationSuccess}`);
+    } else {
+      console.log('[Customs] ✅ Both documents uploaded to SpedirePro successfully');
     }
+    console.log('[Customs] ================================================');
 
     // Step 6: Upload BOTH PDFs to Google Drive with different suffixes
-    console.log('[Customs] Uploading to Google Drive...');
+    console.log('[Customs] ========== GOOGLE DRIVE UPLOAD DEBUG ==========');
     const orderNumber = orderName.replace('#', ''); // e.g., "35622182025"
+    console.log('[Customs] Order number for filenames:', orderNumber);
 
     // Upload invoice with _inv suffix
+    console.log('[Customs] Uploading invoice to Google Drive...');
     const invoiceDriveUrl = await uploadToGoogleDrive(invoice, `${orderNumber}_inv`, 'customs');
-    console.log(`[Customs] Uploaded invoice to Google Drive: ${invoiceDriveUrl}`);
+    console.log(`[Customs] ✅ Invoice uploaded: ${invoiceDriveUrl}`);
 
     // Upload declaration with _dog suffix
+    console.log('[Customs] Uploading declaration to Google Drive...');
     const declarationDriveUrl = await uploadToGoogleDrive(declaration, `${orderNumber}_dog`, 'customs');
-    console.log(`[Customs] Uploaded declaration to Google Drive: ${declarationDriveUrl}`);
+    console.log(`[Customs] ✅ Declaration uploaded: ${declarationDriveUrl}`);
+    console.log('[Customs] =================================================');
 
     // Step 7: Update BOTH Shopify metafields
     // custom.invoice = Fattura commerciale (_inv)
     // custom.doganale = Dichiarazione di libera esportazione (_dog)
-    console.log('[Customs] Updating Shopify metafields...');
+    console.log('[Customs] ========== SHOPIFY METAFIELDS DEBUG ==========');
+    console.log('[Customs] Setting custom.invoice:', invoiceDriveUrl);
+    console.log('[Customs] Setting custom.doganale:', declarationDriveUrl);
     await updateCustomsMetafields(orderId, invoiceDriveUrl, declarationDriveUrl);
 
     console.log(`[Customs] ✅ Customs declaration completed successfully for order ${orderName}`);
