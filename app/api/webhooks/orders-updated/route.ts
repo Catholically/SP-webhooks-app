@@ -307,21 +307,9 @@ export async function POST(req: Request) {
 
   console.log("Orders-updated webhook - Order:", order.name, "Tags:", tags);
 
-  // 🔒 EARLY DUPLICATE CHECK: If LABEL-OK-* tag exists, skip immediately
-  // This catches race conditions where two webhooks fire before metafields are set
-  const hasLabelOkTag = tags.some(t => t.startsWith("LABEL-OK-"));
-  if (hasLabelOkTag) {
-    console.log(`⚠️ SKIPPED: Order ${order.name} already has LABEL-OK tag (duplicate webhook)`);
-    return json(200, {
-      ok: true,
-      skipped: true,
-      reason: "label-ok-tag-exists",
-      order: order.name,
-      message: "Label already created (LABEL-OK tag found)"
-    });
-  }
-
-  // 📄 CHECK FOR DOG TAGS (MI-DOG, RM-DOG) - Generate customs docs only
+  // 📄 CHECK FOR DOG TAGS FIRST (MI-DOG, RM-DOG) - Generate customs docs only
+  // This must be checked BEFORE the LABEL-OK check, because DOG tags are used
+  // on orders that already have labels (and thus have LABEL-OK-* tags)
   for (const tag of tags) {
     if (tag.endsWith("-DOG")) {
       const code = tag.replace("-DOG", "");
@@ -486,6 +474,26 @@ export async function POST(req: Request) {
       recipient: 'denticristina@gmail.com',
       labelUrl,
     });
+  }
+
+  // 🔒 EARLY DUPLICATE CHECK: If LABEL-OK-* tag exists, skip CREATE tags
+  // This catches race conditions where two webhooks fire before metafields are set
+  // NOTE: This check is placed AFTER DOG and LABEL tag handling, because those
+  // tags are meant to work on orders that already have labels
+  const hasLabelOkTag = tags.some(t => t.startsWith("LABEL-OK-"));
+  if (hasLabelOkTag) {
+    // Check if there's a CREATE tag - if so, skip it (duplicate prevention)
+    const hasCreateTag = tags.some(t => t.includes("-CREATE"));
+    if (hasCreateTag) {
+      console.log(`⚠️ SKIPPED: Order ${order.name} already has LABEL-OK tag (duplicate webhook for CREATE)`);
+      return json(200, {
+        ok: true,
+        skipped: true,
+        reason: "label-ok-tag-exists",
+        order: order.name,
+        message: "Label already created (LABEL-OK tag found)"
+      });
+    }
   }
 
   let senderCode: string | null = null;
