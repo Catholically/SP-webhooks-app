@@ -1,9 +1,9 @@
 import { PDFDocument, rgb, StandardFonts, PDFPage, PDFFont, PDFImage } from 'pdf-lib';
 import type { CustomsLineItem, OrderCustomsData } from './shopify-customs';
 
-// Document types for SpedirePro API
-export const DOCUMENT_TYPE_INVOICE = 1;
-export const DOCUMENT_TYPE_DECLARATION = 2;
+// Document types for SpedirePro API (new API uses strings)
+export const DOCUMENT_TYPE_INVOICE = 'invoice';
+export const DOCUMENT_TYPE_DECLARATION = 'export_declaration';
 
 interface CustomsDeclarationData {
   // Company info

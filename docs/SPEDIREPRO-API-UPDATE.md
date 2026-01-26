@@ -1,104 +1,75 @@
 # Aggiornamento API SpedirePro - Upload Documenti Doganali
 
 **Data**: Gennaio 2026
+**Documentazione ufficiale**: https://spedirepro.readme.io/reference/upload-documentazione-doganale
 
-## Cosa è cambiato
+## API Attuale (Gennaio 2026)
 
-SpedirePro ha aggiornato l'API per l'upload dei documenti doganali. Ora i due documenti devono essere caricati **separatamente** invece che come un unico PDF.
+SpedirePro ha semplificato l'API per l'upload dei documenti doganali. Ora è un singolo endpoint.
 
-### Prima (deprecato)
-- Un singolo PDF di 2 pagine (fattura + dichiarazione)
-- Upload via `POST /shipment/{reference}/upload`
+### Endpoint
 
-### Ora (nuovo)
-- **Due PDF separati**
-- Upload in **due step** per ogni documento
+```
+POST https://www.spedirepro.com/public-api/v1/shipment/{reference}/upload
+```
 
----
+### Headers
 
-## Nuova Struttura API
+| Header | Valore |
+|--------|--------|
+| `X-Api-Key` | API key SpedirePro (obbligatorio) |
+| `Content-Type` | `multipart/form-data` |
+
+### Path Parameters
+
+| Parametro | Tipo | Descrizione |
+|-----------|------|-------------|
+| `reference` | string | Reference della spedizione SpedirePro (es. `AF110126392D5`) |
+
+### Body (multipart/form-data)
+
+| Campo | Tipo | Obbligatorio | Descrizione |
+|-------|------|--------------|-------------|
+| `document` | binary | Sì | File PDF, JPG o PNG |
+| `document_type` | string | No | `invoice` o `export_declaration` (default: `invoice`) |
 
 ### Tipi di Documento
+
 | document_type | Documento |
 |---------------|-----------|
-| 1 | Fattura Commerciale (Commercial Invoice) |
-| 2 | Dichiarazione di Libera Esportazione |
+| `invoice` | Fattura Commerciale (Commercial Invoice) |
+| `export_declaration` | Dichiarazione di Libera Esportazione EUR.1/A.TR. |
 
----
+### Response
 
-## Processo di Upload (2 step per documento)
-
-### Step 1: Upload del file
-
-```
-POST https://www.spedirepro.com/api/documents/dogana/upload
-```
-
-**Headers:**
-```
-X-Api-Key: {YOUR_API_KEY}
-Content-Type: multipart/form-data
-```
-
-**Body (form-data):**
-```
-document: [file PDF]
-```
-
-**Risposta:** 200 OK se upload riuscito
-
----
-
-### Step 2: Conferma upload con tipo documento
-
-```
-POST https://www.spedirepro.com/api/user/shipment/customs-uploaded
-```
-
-**Headers:**
-```
-X-Api-Key: {YOUR_API_KEY}
-Content-Type: application/json
-```
-
-**Body JSON:**
+**Success (200)**:
 ```json
-{
-  "reference": "AF110126392D5",
-  "document_type": 1,
-  "file_path": "{tracking}_{document_type}_{reference}.pdf"
-}
+{}
 ```
 
-**Parametri:**
-| Campo | Tipo | Descrizione |
-|-------|------|-------------|
-| reference | string | Reference della spedizione SpedirePro |
-| document_type | number | 1 = Fattura, 2 = Dichiarazione |
-| file_path | string | Nome file nel formato `{tracking}_{type}_{reference}.pdf` |
+**Error (422)**: Errore di validazione
 
 ---
 
-## Esempio Completo in JavaScript/TypeScript
+## Esempio TypeScript
 
 ```typescript
 async function uploadDocumentToSpedirePro(
   reference: string,
-  tracking: string,
   pdfBuffer: Buffer,
-  documentType: number,  // 1 = Invoice, 2 = Declaration
+  documentType: 'invoice' | 'export_declaration',
   filename: string
 ): Promise<boolean> {
   const SPRO_API_KEY = process.env.SPRO_API_KEY;
-  const SPRO_WEB_BASE = "https://www.spedirepro.com";
+  const SPRO_API_BASE = "https://www.spedirepro.com/public-api/v1";
 
-  // Step 1: Upload del file
   const formData = new FormData();
   const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
   formData.append('document', blob, filename);
+  formData.append('document_type', documentType);
 
-  const uploadResponse = await fetch(
-    `${SPRO_WEB_BASE}/api/documents/dogana/upload`,
+  const response = await fetch(
+    `${SPRO_API_BASE}/shipment/${reference}/upload`,
     {
       method: 'POST',
       headers: {
@@ -108,49 +79,46 @@ async function uploadDocumentToSpedirePro(
     }
   );
 
-  if (!uploadResponse.ok) {
-    console.error('Upload failed:', await uploadResponse.text());
-    return false;
-  }
-
-  // Step 2: Conferma con document_type
-  const filePath = `${tracking}_${documentType}_${reference}.pdf`;
-  const confirmResponse = await fetch(
-    `${SPRO_WEB_BASE}/api/user/shipment/customs-uploaded`,
-    {
-      method: 'POST',
-      headers: {
-        'X-Api-Key': SPRO_API_KEY,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        reference: reference,
-        document_type: documentType,
-        file_path: filePath,
-      }),
-    }
-  );
-
-  return confirmResponse.ok;
+  return response.ok;
 }
 
 // Utilizzo
-await uploadDocumentToSpedirePro(reference, tracking, invoiceBuffer, 1, 'invoice.pdf');
-await uploadDocumentToSpedirePro(reference, tracking, declarationBuffer, 2, 'declaration.pdf');
+await uploadDocumentToSpedirePro(reference, invoiceBuffer, 'invoice', 'invoice.pdf');
+await uploadDocumentToSpedirePro(reference, declarationBuffer, 'export_declaration', 'declaration.pdf');
 ```
 
 ---
 
-## Note Importanti
+## Migrazione da API Precedente
 
-1. **Ordine**: Entrambi i documenti possono essere caricati in parallelo
-2. **Autenticazione**: Usa sempre l'header `X-Api-Key`
-3. **Reference**: È il codice univoco della spedizione SpedirePro (es. `AF110126392D5`)
-4. **File path**: Il formato deve essere `{tracking}_{document_type}_{reference}.pdf`
+### Prima (deprecato - 2 step)
+
+1. Upload file: `POST /api/documents/dogana/upload`
+2. Conferma: `POST /api/user/shipment/customs-uploaded` con `document_type: 1|2` e `file_path`
+
+### Ora (1 step)
+
+1. Upload diretto: `POST /public-api/v1/shipment/{reference}/upload` con `document_type: 'invoice'|'export_declaration'`
+
+### Cambio tipi documento
+
+| Vecchio | Nuovo |
+|---------|-------|
+| `1` | `'invoice'` |
+| `2` | `'export_declaration'` |
 
 ---
 
-## Riferimenti
+## File Modificati
 
-- Documentazione API: https://spedirepro.readme.io/reference/autenticazione-e-webhook
-- Interfaccia web upload: Sezione "Documenti Dogana" nella scheda spedizione
+- `lib/customs-pdf.ts` - Costanti `DOCUMENT_TYPE_INVOICE` e `DOCUMENT_TYPE_DECLARATION`
+- `lib/customs-handler.ts` - Funzione `uploadDocumentToSpedirePro()`
+- `app/api/proxy/spro-upload/route.ts` - Proxy endpoint
+
+---
+
+## Note
+
+- I due documenti possono essere caricati in parallelo
+- Il reference è il codice univoco della spedizione SpedirePro
+- L'API restituisce un oggetto vuoto `{}` in caso di successo

@@ -3,11 +3,14 @@
  * Used by SP-Label-Generator to bypass Cloudflare blocking
  *
  * SP-Label-Generator -> this proxy -> SpedirePro
+ *
+ * Updated January 2026 for new SpedirePro API
+ * @see https://spedirepro.readme.io/reference/upload-documentazione-doganale
  */
 
 export const runtime = "nodejs";
 
-const SPRO_WEB_BASE = "https://www.spedirepro.com";
+const SPRO_API_BASE = "https://www.spedirepro.com/public-api/v1";
 
 const json = (status: number, obj: unknown) =>
   new Response(JSON.stringify(obj), {
@@ -37,11 +40,10 @@ export async function OPTIONS() {
  *
  * Body (JSON):
  * {
- *   reference: string,      // SpedirePro reference
- *   tracking: string,       // Tracking number
- *   documentType: 1 | 2,    // 1 = invoice, 2 = declaration
- *   pdfBase64: string,      // PDF content as base64
- *   filename: string        // Original filename
+ *   reference: string,                           // SpedirePro reference
+ *   documentType: 'invoice' | 'export_declaration',  // Document type (new API)
+ *   pdfBase64: string,                           // PDF content as base64
+ *   filename: string                             // Original filename
  * }
  *
  * Authorization: Bearer <PROXY_SECRET>
@@ -59,8 +61,7 @@ export async function POST(req: Request) {
   // Parse body
   let body: {
     reference: string;
-    tracking: string;
-    documentType: number;
+    documentType: string;  // 'invoice' or 'export_declaration'
     pdfBase64: string;
     filename: string;
   };
@@ -71,10 +72,15 @@ export async function POST(req: Request) {
     return json(400, { ok: false, error: "invalid json" });
   }
 
-  const { reference, tracking, documentType, pdfBase64, filename } = body;
+  const { reference, documentType, pdfBase64, filename } = body;
 
-  if (!reference || !tracking || !documentType || !pdfBase64 || !filename) {
+  if (!reference || !documentType || !pdfBase64 || !filename) {
     return json(400, { ok: false, error: "missing required fields" });
+  }
+
+  // Validate document type
+  if (documentType !== 'invoice' && documentType !== 'export_declaration') {
+    return json(400, { ok: false, error: "invalid documentType, must be 'invoice' or 'export_declaration'" });
   }
 
   const SPRO_API_KEY = process.env.SPRO_API_KEY;
@@ -86,15 +92,16 @@ export async function POST(req: Request) {
   try {
     // Convert base64 to buffer
     const pdfBuffer = Buffer.from(pdfBase64, 'base64');
-    console.log(`[Proxy] Uploading document type ${documentType} for reference ${reference} (${pdfBuffer.length} bytes)`);
+    console.log(`[Proxy] Uploading document type "${documentType}" for reference ${reference} (${pdfBuffer.length} bytes)`);
 
-    // Step 1: Upload the file to SpedirePro
+    // Single-step upload to new SpedirePro API
     const formData = new FormData();
     const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
     formData.append('document', blob, filename);
+    formData.append('document_type', documentType);
 
-    const uploadResponse = await fetch(
-      `${SPRO_WEB_BASE}/api/documents/dogana/upload`,
+    const response = await fetch(
+      `${SPRO_API_BASE}/shipment/${reference}/upload`,
       {
         method: 'POST',
         headers: {
@@ -104,49 +111,18 @@ export async function POST(req: Request) {
       }
     );
 
-    if (!uploadResponse.ok) {
-      const errorText = await uploadResponse.text();
-      console.error(`[Proxy] Upload failed: ${uploadResponse.status} ${errorText.substring(0, 200)}`);
-      return json(uploadResponse.status, {
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Proxy] Upload failed: ${response.status} ${errorText.substring(0, 200)}`);
+      return json(response.status, {
         ok: false,
         error: "upload failed",
-        status: uploadResponse.status,
+        status: response.status,
         details: errorText.substring(0, 500)
       });
     }
 
-    console.log(`[Proxy] File uploaded successfully, confirming...`);
-
-    // Step 2: Confirm the upload with document type
-    const filePath = `${tracking}_${documentType}_${reference}.pdf`;
-    const confirmResponse = await fetch(
-      `${SPRO_WEB_BASE}/api/user/shipment/customs-uploaded`,
-      {
-        method: 'POST',
-        headers: {
-          'X-Api-Key': SPRO_API_KEY,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          reference: reference,
-          document_type: documentType,
-          file_path: filePath,
-        }),
-      }
-    );
-
-    if (!confirmResponse.ok) {
-      const errorText = await confirmResponse.text();
-      console.error(`[Proxy] Confirm failed: ${confirmResponse.status} ${errorText.substring(0, 200)}`);
-      return json(confirmResponse.status, {
-        ok: false,
-        error: "confirm failed",
-        status: confirmResponse.status,
-        details: errorText.substring(0, 500)
-      });
-    }
-
-    console.log(`[Proxy] ✅ Document type ${documentType} uploaded and confirmed for reference ${reference}`);
+    console.log(`[Proxy] ✅ Document type "${documentType}" uploaded successfully for reference ${reference}`);
     return json(200, { ok: true, documentType, reference });
 
   } catch (error) {

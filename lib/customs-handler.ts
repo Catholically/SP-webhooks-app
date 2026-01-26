@@ -126,19 +126,18 @@ async function fetchOrderShippingInfo(orderId: string): Promise<OrderShippingInf
 }
 
 /**
- * Upload a single customs document to SpedirePro (new API)
- * Step 1: Upload file to /api/documents/dogana/upload
- * Step 2: Confirm with /api/user/shipment/customs-uploaded
+ * Upload a single customs document to SpedirePro (new API - January 2026)
+ * Single endpoint: POST /public-api/v1/shipment/{reference}/upload
+ * @see https://spedirepro.readme.io/reference/upload-documentazione-doganale
  */
 async function uploadDocumentToSpedirePro(
   reference: string,
-  tracking: string,
   pdfBuffer: Buffer,
-  documentType: number,
+  documentType: string,  // 'invoice' or 'export_declaration'
   filename: string
 ): Promise<boolean> {
   const SPRO_API_KEY = process.env.SPRO_API_KEY;
-  const SPRO_WEB_BASE = "https://www.spedirepro.com";
+  const SPRO_API_BASE = "https://www.spedirepro.com/public-api/v1";
 
   if (!SPRO_API_KEY) {
     console.error('[Customs] SPRO_API_KEY not configured');
@@ -146,14 +145,15 @@ async function uploadDocumentToSpedirePro(
   }
 
   try {
-    // Step 1: Upload the file
-    console.log(`[Customs] Uploading document type ${documentType} for reference ${reference}...`);
+    console.log(`[Customs] Uploading document type "${documentType}" for reference ${reference}...`);
+
     const formData = new FormData();
     const blob = new Blob([pdfBuffer], { type: 'application/pdf' });
     formData.append('document', blob, filename);
+    formData.append('document_type', documentType);
 
-    const uploadResponse = await fetch(
-      `${SPRO_WEB_BASE}/api/documents/dogana/upload`,
+    const response = await fetch(
+      `${SPRO_API_BASE}/shipment/${reference}/upload`,
       {
         method: 'POST',
         headers: {
@@ -163,39 +163,13 @@ async function uploadDocumentToSpedirePro(
       }
     );
 
-    if (!uploadResponse.ok) {
-      const errorText = await uploadResponse.text();
-      console.error(`[Customs] Failed to upload file to SpedirePro: ${uploadResponse.status} ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[Customs] Failed to upload to SpedirePro: ${response.status} ${errorText}`);
       return false;
     }
 
-    console.log(`[Customs] File uploaded successfully, confirming...`);
-
-    // Step 2: Confirm the upload with document type
-    const filePath = `${tracking}_${documentType}_${reference}.pdf`;
-    const confirmResponse = await fetch(
-      `${SPRO_WEB_BASE}/api/user/shipment/customs-uploaded`,
-      {
-        method: 'POST',
-        headers: {
-          'X-Api-Key': SPRO_API_KEY,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          reference: reference,
-          document_type: documentType,
-          file_path: filePath,
-        }),
-      }
-    );
-
-    if (!confirmResponse.ok) {
-      const errorText = await confirmResponse.text();
-      console.error(`[Customs] Failed to confirm upload to SpedirePro: ${confirmResponse.status} ${errorText}`);
-      return false;
-    }
-
-    console.log(`[Customs] ✅ Document type ${documentType} uploaded and confirmed for reference ${reference}`);
+    console.log(`[Customs] ✅ Document type "${documentType}" uploaded successfully for reference ${reference}`);
     return true;
   } catch (error) {
     console.error('[Customs] Error uploading to SpedirePro:', error);
@@ -205,20 +179,19 @@ async function uploadDocumentToSpedirePro(
 
 /**
  * Upload both customs documents to SpedirePro
- * document_type 1 = Fattura commerciale
- * document_type 2 = Dichiarazione di Libera Esportazione
+ * document_type 'invoice' = Fattura commerciale
+ * document_type 'export_declaration' = Dichiarazione di Libera Esportazione
  */
 async function uploadToSpedirePro(
   reference: string,
-  tracking: string,
   invoiceBuffer: Buffer,
   declarationBuffer: Buffer
 ): Promise<{ invoiceSuccess: boolean; declarationSuccess: boolean }> {
   console.log(`[Customs] Uploading both documents to SpedirePro for reference ${reference}...`);
 
   const [invoiceSuccess, declarationSuccess] = await Promise.all([
-    uploadDocumentToSpedirePro(reference, tracking, invoiceBuffer, DOCUMENT_TYPE_INVOICE, `invoice_${reference}.pdf`),
-    uploadDocumentToSpedirePro(reference, tracking, declarationBuffer, DOCUMENT_TYPE_DECLARATION, `declaration_${reference}.pdf`),
+    uploadDocumentToSpedirePro(reference, invoiceBuffer, DOCUMENT_TYPE_INVOICE, `invoice_${reference}.pdf`),
+    uploadDocumentToSpedirePro(reference, declarationBuffer, DOCUMENT_TYPE_DECLARATION, `declaration_${reference}.pdf`),
   ]);
 
   console.log(`[Customs] Upload results - Invoice: ${invoiceSuccess ? '✅' : '❌'}, Declaration: ${declarationSuccess ? '✅' : '❌'}`);
@@ -346,12 +319,11 @@ export async function handleCustomsDeclaration(
 
     console.log(`[Customs] PDFs generated - Invoice: ${invoice.length} bytes, Declaration: ${declaration.length} bytes`);
 
-    // Step 5: Upload BOTH documents to SpedirePro (new API with document_type)
+    // Step 5: Upload BOTH documents to SpedirePro (new API - January 2026)
     console.log('[Customs] ========== SPEDIREPRO UPLOAD DEBUG ==========');
     console.log('[Customs] Reference:', reference);
-    console.log('[Customs] Tracking:', tracking);
-    console.log('[Customs] Uploading to SpedirePro (new API)...');
-    const sproResult = await uploadToSpedirePro(reference, tracking, invoice, declaration);
+    console.log('[Customs] Uploading to SpedirePro (new API v1)...');
+    const sproResult = await uploadToSpedirePro(reference, invoice, declaration);
     console.log('[Customs] SpedirePro upload result:', sproResult);
     if (!sproResult.invoiceSuccess || !sproResult.declarationSuccess) {
       console.warn(`[Customs] ⚠️ SpedirePro upload incomplete - Invoice: ${sproResult.invoiceSuccess}, Declaration: ${sproResult.declarationSuccess}`);
