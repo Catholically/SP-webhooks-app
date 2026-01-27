@@ -59,7 +59,7 @@ lib/
 
 ## Magazzini
 
-- **MI** = Milano (email notifiche: denticristina@gmail.com)
+- **MI** = Milano (email notifiche: denti.cristina@gmail.com)
 - **RM** = Roma
 
 ## Tag System
@@ -85,7 +85,7 @@ lib/
 ### Tag per Invio Etichetta via Email
 | Tag | Descrizione |
 |-----|-------------|
-| `LABEL` | Invia etichetta esistente via email a denticristina@gmail.com |
+| `LABEL` | Invia etichetta esistente via email a denti.cristina@gmail.com |
 
 ### Tag Automatici (aggiunti dal sistema)
 | Tag | Significato |

@@ -75,7 +75,7 @@ Integrazione **SpedirePro + Shopify** per automazione spedizioni internazionali.
 
 ## Notifiche Email
 
-Le spedizioni con tag `MI-*` inviano automaticamente una email a `denticristina@gmail.com` con:
+Le spedizioni con tag `MI-*` inviano automaticamente una email a `denti.cristina@gmail.com` con:
 - Dettagli ordine
 - Numero tracking
 - PDF etichetta allegato

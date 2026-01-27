@@ -203,7 +203,7 @@ The integration stores data in Shopify order metafields under namespace `spedire
    - ✅ Wait for tracking from SpedirePro
    - ✅ Store tracking & label URL in order metafields
    - ✅ Auto-fulfill the order
-   - ✅ **Send email notification to denticristina@gmail.com with the label PDF**
+   - ✅ **Send email notification to denti.cristina@gmail.com with the label PDF**
 
 **Important:** Orders without a valid CREATE tag will be skipped (no label created).
 

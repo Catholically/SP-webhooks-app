@@ -18,14 +18,14 @@ type ShippingAddress = {
  * @param orderName - Order name/ID (e.g., #35622182025)
  * @param labelUrl - Google Drive URL to the shipping label PDF
  * @param shippingAddress - Optional shipping address to include in email body
- * @param recipient - Email address to send the label to (default: denticristina@gmail.com)
+ * @param recipient - Email address to send the label to (default: denti.cristina@gmail.com)
  * @returns Success status
  */
 export async function sendLabelEmail(
   orderName: string,
   labelUrl: string,
   shippingAddress?: ShippingAddress,
-  recipient: string = 'denticristina@gmail.com'
+  recipient: string = 'denti.cristina@gmail.com'
 ): Promise<boolean> {
   const resend = getResendClient();
   if (!resend) {

@@ -461,7 +461,7 @@ export async function POST(req: Request) {
         province_code: order.shipping_address?.province_code,
         country_code: order.shipping_address?.country_code,
       },
-      'denticristina@gmail.com'
+      'denti.cristina@gmail.com'
     );
 
     if (!success) {
@@ -484,7 +484,7 @@ export async function POST(req: Request) {
       ok: true,
       action: "label-email-sent",
       order: order.name,
-      recipient: 'denticristina@gmail.com',
+      recipient: 'denti.cristina@gmail.com',
       labelUrl,
     });
   }
@@ -839,7 +839,7 @@ export async function POST(req: Request) {
   if (senderCode === "MI") {
     try {
       console.log(`Setting email recipient metafield for MI order ${order.name}`);
-      await setOrderMetafield(order.id, "spedirepro", "label_email_recipient", "denticristina@gmail.com");
+      await setOrderMetafield(order.id, "spedirepro", "label_email_recipient", "denti.cristina@gmail.com");
       console.log(`✅ Email recipient metafield set successfully`);
     } catch (error) {
       console.error("Failed to set email recipient metafield:", error);
