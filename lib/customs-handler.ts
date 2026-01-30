@@ -187,15 +187,17 @@ async function uploadDocumentToSpedirePro(
  */
 async function uploadToSpedirePro(
   reference: string,
+  tracking: string,
   invoiceBuffer: Buffer,
   declarationBuffer: Buffer,
   accountType: string | null = null
 ): Promise<{ invoiceSuccess: boolean; declarationSuccess: boolean }> {
   console.log(`[Customs] Uploading both documents to SpedirePro for reference ${reference} (account: ${accountType || 'DDP'})...`);
 
+  // Naming convention from CLAUDE.md: {tracking}_inv.pdf and {tracking}_dog.pdf
   const [invoiceSuccess, declarationSuccess] = await Promise.all([
-    uploadDocumentToSpedirePro(reference, invoiceBuffer, DOCUMENT_TYPE_INVOICE, `invoice_${reference}.pdf`, accountType),
-    uploadDocumentToSpedirePro(reference, declarationBuffer, DOCUMENT_TYPE_DECLARATION, `declaration_${reference}.pdf`, accountType),
+    uploadDocumentToSpedirePro(reference, invoiceBuffer, DOCUMENT_TYPE_INVOICE, `${tracking}_inv.pdf`, accountType),
+    uploadDocumentToSpedirePro(reference, declarationBuffer, DOCUMENT_TYPE_DECLARATION, `${tracking}_dog.pdf`, accountType),
   ]);
 
   console.log(`[Customs] Upload results - Invoice: ${invoiceSuccess ? '✅' : '❌'}, Declaration: ${declarationSuccess ? '✅' : '❌'}`);
@@ -330,7 +332,7 @@ export async function handleCustomsDeclaration(
     console.log('[Customs] Reference:', reference);
     console.log('[Customs] Account type:', accountType || 'DDP (default)');
     console.log('[Customs] Uploading to SpedirePro (new API v1)...');
-    const sproResult = await uploadToSpedirePro(reference, invoice, declaration, accountType);
+    const sproResult = await uploadToSpedirePro(reference, tracking, invoice, declaration, accountType);
     console.log('[Customs] SpedirePro upload result:', sproResult);
     if (!sproResult.invoiceSuccess || !sproResult.declarationSuccess) {
       console.warn(`[Customs] ⚠️ SpedirePro upload incomplete - Invoice: ${sproResult.invoiceSuccess}, Declaration: ${sproResult.declarationSuccess}`);
