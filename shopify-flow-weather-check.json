@@ -1,0 +1,45 @@
+{
+  "name": "Holy Water - Freeze Risk Check",
+  "description": "Checks weather forecast for orders containing Holy Water and adds FREEZE-RISK tag if freezing temperatures are expected",
+  "trigger": {
+    "type": "shopify/trigger/order/created"
+  },
+  "conditions": [
+    {
+      "type": "condition",
+      "condition": {
+        "operands": [
+          {
+            "type": "variable",
+            "variableName": "order.lineItems",
+            "property": "title"
+          },
+          {
+            "type": "literal",
+            "value": "Holy Water"
+          }
+        ],
+        "operator": "contains"
+      }
+    }
+  ],
+  "actions": [
+    {
+      "type": "shopify/action/http_request",
+      "configuration": {
+        "url": "https://webhooks.catholically.com/api/webhooks/weather-check",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "order_id": "{{order.id}}",
+          "order_name": "{{order.name}}",
+          "city": "{{order.shippingAddress.city}}",
+          "province_code": "{{order.shippingAddress.provinceCode}}",
+          "country_code": "{{order.shippingAddress.countryCode}}"
+        }
+      }
+    }
+  ]
+}
