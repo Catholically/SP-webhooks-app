@@ -227,8 +227,17 @@ export async function POST(request: NextRequest) {
 /**
  * Add a tag to a Shopify order using GraphQL
  */
-async function addTagToOrder(orderGid: string, tag: string, timestamp: string): Promise<boolean> {
+async function addTagToOrder(orderId: string, tag: string, timestamp: string): Promise<boolean> {
   try {
+    // Normalize order ID to GID format
+    let orderGid = orderId;
+    if (!orderId.startsWith('gid://')) {
+      // If it's just a number, convert to GID
+      orderGid = `gid://shopify/Order/${orderId}`;
+    }
+
+    console.log(`[${timestamp}] [Weather-Check] Adding tag to order. Input: ${orderId}, GID: ${orderGid}`);
+
     // First, get current tags
     const getTagsQuery = `
       query getOrderTags($id: ID!) {
@@ -254,9 +263,15 @@ async function addTagToOrder(orderGid: string, tag: string, timestamp: string): 
     });
 
     const getData = await getResponse.json();
+    console.log(`[${timestamp}] [Weather-Check] Get tags response:`, JSON.stringify(getData));
 
     if (getData.errors) {
-      console.error(`[${timestamp}] [Weather-Check] Error fetching order tags:`, getData.errors);
+      console.error(`[${timestamp}] [Weather-Check] Error fetching order tags:`, JSON.stringify(getData.errors));
+      return false;
+    }
+
+    if (!getData.data?.order) {
+      console.error(`[${timestamp}] [Weather-Check] Order not found with GID: ${orderGid}`);
       return false;
     }
 
@@ -304,10 +319,11 @@ async function addTagToOrder(orderGid: string, tag: string, timestamp: string): 
     });
 
     const updateData = await updateResponse.json();
+    console.log(`[${timestamp}] [Weather-Check] Update tags response:`, JSON.stringify(updateData));
 
     if (updateData.errors || updateData.data?.orderUpdate?.userErrors?.length > 0) {
       console.error(`[${timestamp}] [Weather-Check] Error updating tags:`,
-        updateData.errors || updateData.data?.orderUpdate?.userErrors);
+        JSON.stringify(updateData.errors || updateData.data?.orderUpdate?.userErrors));
       return false;
     }
 

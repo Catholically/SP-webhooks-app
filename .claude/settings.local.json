@@ -11,7 +11,19 @@
       "Bash(npx vercel:*)",
       "Bash(curl:*)",
       "Bash(npm install:*)",
-      "Bash(npx tsx:*)"
+      "Bash(npx tsx:*)",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\reorder_app\" add .)",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\reorder_app\" commit -m \"v5.7 - Add SP Label Generator button\")",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\reorder_app\" push)",
+      "Bash(dir \"C:\\\\AI_Projects\" /b)",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\Dashboard\" add .)",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\Dashboard\" commit -m \"v1.5 - Add SP Label Generator card\")",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\Dashboard\" push)",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\reorder_app\" commit -m \"Revert: remove Labels button added by mistake\")",
+      "Bash(git -C \"C:\\\\AI_Projects\\\\Dashboard\" commit -m \"v1.6 - Add Spedizioni su Drive link\")",
+      "WebFetch(domain:www.indexnow.org)",
+      "WebFetch(domain:www.catholically.com)",
+      "Bash(python:*)"
     ]
   }
 }
