@@ -1,6 +1,6 @@
 # CLAUDE.md - SP-webhooks-app
 
-> **Ultimo aggiornamento**: 2026-01-26
+> **Ultimo aggiornamento**: 2026-02-05
 
 ## ⚠️ ATTENZIONE - NOMI METAFIELD ESATTI (NON INVENTARE!)
 
@@ -45,7 +45,8 @@ Integrazione SpedirePro + Shopify per automazione spedizioni internazionali di H
 ```
 app/api/webhooks/
 ├── orders-updated/route.ts  → Riceve webhook Shopify, crea etichette
-└── spedirepro/route.ts      → Riceve webhook SpedirePro, aggiorna tracking
+├── spedirepro/route.ts      → Riceve webhook SpedirePro, aggiorna tracking
+└── weather-check/route.ts   → Controlla meteo destinazione, aggiunge FREEZE-RISK
 
 lib/
 ├── customs-handler.ts       → Orchestrazione documenti doganali
@@ -95,6 +96,7 @@ lib/
 | `LABEL-SENT` | Etichetta inviata via email |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
+| `FREEZE-RISK` | Rischio gelo nella destinazione (aggiunto da weather-check) |
 
 ## Protezione Anti-Duplicati
 
@@ -133,6 +135,9 @@ Questo permette di rigenerare doganali su ordini con etichette esistenti.
 ### Email
 - `RESEND_API_KEY` - Per invio email
 
+### OpenWeather (weather-check)
+- `OPENWEATHER_API_KEY` - API key OpenWeather One Call 3.0
+
 ## Google Sheets
 
 - **Foglio condiviso con Easyship**: https://docs.google.com/spreadsheets/d/1z1Y_efzGx2pIgrruzTZExFdgFxfnqRa_V4mFJw7Q9CA/edit
@@ -162,6 +167,31 @@ npm run dev    # Development locale
 npm run build  # Build produzione
 git add . && git commit -m "msg" && git push && vercel --prod  # Deploy
 ```
+
+## Weather Check (Protezione Gelo Holy Water)
+
+Endpoint: `POST /api/webhooks/weather-check`
+
+Triggerato da Shopify Flow quando un ordine contiene Holy Water. Controlla il meteo a 8 giorni nella destinazione e aggiunge il tag `FREEZE-RISK` se la temperatura minima scende sotto 0°C.
+
+**Payload da Shopify Flow:**
+```json
+{
+  "order_id": "gid://shopify/Order/123456",
+  "order_name": "#12345",
+  "city": "New York",
+  "province_code": "NY",
+  "country_code": "US"
+}
+```
+
+**Flusso:**
+1. Geocoding API: città → lat/lon
+2. One Call 3.0: lat/lon → previsioni 8 giorni
+3. Se temp minima ≤ 0°C → aggiunge tag `FREEZE-RISK` all'ordine
+
+**IMPORTANTE - URL Shopify:**
+L'URL admin deve usare il pattern standard: `https://${SHOPIFY_STORE}.myshopify.com/admin/api/${SHOPIFY_API_VERSION}` (dove `SHOPIFY_STORE` = `holy-trove`, senza `.myshopify.com`).
 
 ## Note
 
