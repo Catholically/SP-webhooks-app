@@ -25,8 +25,9 @@ import { NextRequest, NextResponse } from "next/server";
  * 2. One Call 3.0: lat,lon -> 8-day forecast
  */
 
-const SHOPIFY_STORE = process.env.SHOPIFY_STORE || process.env.SHOPIFY_SHOP || "holy-trove.myshopify.com";
+const SHOPIFY_STORE = process.env.SHOPIFY_STORE || process.env.SHOPIFY_SHOP || "holy-trove";
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN || process.env.SHOPIFY_ACCESS_TOKEN || "";
+const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-10";
 const OPENWEATHER_API_KEY = process.env.OPENWEATHER_API_KEY || "";
 
 // Freezing threshold in Celsius
@@ -248,7 +249,7 @@ async function addTagToOrder(orderId: string, tag: string, timestamp: string): P
       }
     `;
 
-    const adminBase = `https://${SHOPIFY_STORE}/admin/api/2025-01`;
+    const adminBase = `https://${SHOPIFY_STORE}.myshopify.com/admin/api/${SHOPIFY_API_VERSION}`;
 
     const getResponse = await fetch(`${adminBase}/graphql.json`, {
       method: "POST",
