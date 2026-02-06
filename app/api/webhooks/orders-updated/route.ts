@@ -87,6 +87,59 @@ type ShopifyOrder = {
 const json = (status: number, obj: unknown) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 
+/**
+ * Normalize phone number for SpedirePro/UPS API
+ * - Removes spaces, dashes, parentheses
+ * - Strips Amazon relay extensions (extra 4 digits appended to phone numbers)
+ * - Keeps original format (00xx prefix preserved)
+ */
+function normalizePhone(phone: string | undefined | null): string {
+  if (!phone) return "+15555555555"; // Default fallback
+
+  // Remove all non-digit characters except +
+  let cleaned = phone.replace(/[^\d+]/g, '');
+
+  // Extract just digits for length check
+  const digitsOnly = cleaned.replace(/\D/g, '');
+
+  // Amazon relay phone numbers: they append a 4-digit extension to real phone numbers
+  // E.g. 0016026716610 (13 digits) + 4373 (ext) = 00160267166104373 (17 digits)
+  // Real phone numbers are max 13 digits (with 00 prefix) or 12 (with + prefix)
+  // If more than 13 digits, strip the last 4 (Amazon extension)
+  if (digitsOnly.length > 13) {
+    cleaned = digitsOnly.substring(0, digitsOnly.length - 4);
+    console.log(`[normalizePhone] Stripped Amazon extension: ${phone} → ${cleaned}`);
+  }
+
+  return cleaned || "+15555555555";
+}
+
+/**
+ * Normalize special characters for SpedirePro API compatibility
+ * German: ß → ss, ä → ae, ö → oe, ü → ue
+ * French: é/è/ê → e, à → a, etc.
+ */
+function normalizeAddress(text: string | undefined): string {
+  if (!text) return "";
+  return text
+    // German
+    .replace(/ß/g, 'ss')
+    .replace(/ä/gi, (m) => m === 'Ä' ? 'Ae' : 'ae')
+    .replace(/ö/gi, (m) => m === 'Ö' ? 'Oe' : 'oe')
+    .replace(/ü/gi, (m) => m === 'Ü' ? 'Ue' : 'ue')
+    // French/Spanish/Portuguese accents
+    .replace(/[éèêë]/gi, 'e')
+    .replace(/[àâá]/gi, 'a')
+    .replace(/[ùûú]/gi, 'u')
+    .replace(/[îï]/gi, 'i')
+    .replace(/[ôó]/gi, 'o')
+    .replace(/ç/gi, 'c')
+    .replace(/ñ/gi, 'n')
+    // Nordic
+    .replace(/[åæ]/gi, 'a')
+    .replace(/ø/gi, 'o');
+}
+
 // Mappa CAP -> Provincia per Italia
 function getItalianProvinceFromCAP(cap: string): string | null {
   if (!cap) return null;
@@ -142,6 +195,8 @@ async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAd
   const apiVersion = env("SHOPIFY_API_VERSION") || "2025-10";
   const adminUrl = `https://${store}.myshopify.com/admin/api/${apiVersion}`;
 
+  console.log(`[updateOrderTags] Store: ${store}, Order: ${orderId}, Remove: [${tagsToRemove}], Add: [${tagsToAdd}]`);
+
   const orderGid = `gid://shopify/Order/${orderId}`;
 
   // Remove tags
@@ -152,7 +207,7 @@ async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAd
           userErrors { field message }
         }
       }`;
-    await fetch(`${adminUrl}/graphql.json`, {
+    const removeResp = await fetch(`${adminUrl}/graphql.json`, {
       method: "POST",
       headers: {
         "X-Shopify-Access-Token": token,
@@ -163,6 +218,8 @@ async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAd
         variables: { id: orderGid, tags: tagsToRemove },
       }),
     });
+    const removeResult = await removeResp.json();
+    console.log(`[updateOrderTags] Remove result:`, JSON.stringify(removeResult));
   }
 
   // Add tags
@@ -173,7 +230,7 @@ async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAd
           userErrors { field message }
         }
       }`;
-    await fetch(`${adminUrl}/graphql.json`, {
+    const addResp = await fetch(`${adminUrl}/graphql.json`, {
       method: "POST",
       headers: {
         "X-Shopify-Access-Token": token,
@@ -184,6 +241,8 @@ async function updateOrderTags(orderId: number, tagsToRemove: string[], tagsToAd
         variables: { id: orderGid, tags: tagsToAdd },
       }),
     });
+    const addResult = await addResp.json();
+    console.log(`[updateOrderTags] Add result:`, JSON.stringify(addResult));
   }
 }
 
@@ -607,6 +666,8 @@ export async function POST(req: Request) {
       order(id: $id) {
         tracking: metafield(namespace: "spedirepro", key: "tracking") { value }
         reference: metafield(namespace: "spro", key: "reference") { value }
+        labelCount: metafield(namespace: "spedirepro", key: "label_count") { value }
+        lastLabelTime: metafield(namespace: "spedirepro", key: "last_label_time") { value }
       }
     }`;
 
@@ -626,6 +687,25 @@ export async function POST(req: Request) {
     const checkData = await checkResp.json();
     const existingTracking = checkData?.data?.order?.tracking?.value;
     const existingReference = checkData?.data?.order?.reference?.value;
+    const labelCount = parseInt(checkData?.data?.order?.labelCount?.value || "0", 10);
+    const lastLabelTime = checkData?.data?.order?.lastLabelTime?.value;
+
+    // 🚨 RATE LIMIT: Block if more than 2 labels created in last 5 minutes
+    if (labelCount >= 2 && lastLabelTime) {
+      const timeSinceLastLabel = Date.now() - new Date(lastLabelTime).getTime();
+      const fiveMinutes = 5 * 60 * 1000;
+      if (timeSinceLastLabel < fiveMinutes) {
+        console.error(`🚨 RATE LIMITED: Order ${order.name} already has ${labelCount} labels in last 5 min!`);
+        return json(200, {
+          ok: false,
+          blocked: true,
+          reason: "rate-limited",
+          order: order.name,
+          labelCount,
+          message: `Rate limited: ${labelCount} labels created recently. Wait 5 minutes or remove RM-CREATE/MI-CREATE tag manually.`
+        });
+      }
+    }
 
     if (existingTracking || existingReference) {
       console.log(`⚠️ SKIPPED: Label already exists for order ${order.name}`);
@@ -709,8 +789,9 @@ export async function POST(req: Request) {
 
   console.log(`✅ Country ${to.country_code} validated for ${isDDU ? 'DDU' : 'DDP'} account`);
 
-  const receiverPhone =
-    first(to.phone, order.billing_address?.phone, "+15555555555") || "+15555555555";
+  const receiverPhone = normalizePhone(
+    first(to.phone, order.billing_address?.phone, "+15555555555")
+  );
 
   const receiverEmail =
     first(order.email, order.contact_email, order.customer?.email, SENDER.email) || SENDER.email;
@@ -740,7 +821,9 @@ export async function POST(req: Request) {
     .substring(0, 27);
 
   // Concatenate address1 and address2 (for apt/suite numbers)
-  const fullStreet = [to.address1, to.address2].filter(Boolean).join(", ");
+  // Normalize special characters for SpedirePro API compatibility
+  const fullStreet = normalizeAddress([to.address1, to.address2].filter(Boolean).join(", "));
+  const normalizedCity = normalizeAddress(to.city);
 
   const sproBody: any = {
     merchant_reference: order.name, // critical to reconcile on webhook
@@ -755,12 +838,12 @@ export async function POST(req: Request) {
       street: SENDER.street,
     },
     receiver: {
-      name: personName,
+      name: normalizeAddress(personName),
       email: receiverEmail,
       phone: receiverPhone,
       country: to.country_code,
       province: receiverProvince,
-      city: to.city,
+      city: normalizedCity,
       postcode: to.zip,
       street: fullStreet,
     },
@@ -817,10 +900,12 @@ export async function POST(req: Request) {
 
   // Label created successfully - update tags (remove MI-CREATE/RM-CREATE, add LABEL-OK-MI or LABEL-OK-RM)
   const labelTag = `LABEL-OK-${senderCode}`;
+  console.log(`✅ Label created! Now updating tags: remove [${usedTag}], add [${labelTag}]`);
   try {
     await updateOrderTags(order.id, [usedTag], [labelTag]);
+    console.log(`✅ Tags updated successfully for order ${order.name}`);
   } catch (error) {
-    console.error("Failed to update order tags:", error);
+    console.error("❌ Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
   }
 
@@ -833,6 +918,18 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("Failed to set account_type metafield:", error);
     // Don't fail the whole request if metafield set fails
+  }
+
+  // 🚨 RATE LIMIT TRACKING: Increment label counter and timestamp
+  try {
+    // Get current count and increment
+    const currentCount = await getOrderMetafield(orderGid, "spedirepro", "label_count");
+    const newCount = (parseInt(currentCount || "0", 10) + 1).toString();
+    await setOrderMetafield(order.id, "spedirepro", "label_count", newCount);
+    await setOrderMetafield(order.id, "spedirepro", "last_label_time", new Date().toISOString());
+    console.log(`📊 Label count updated: ${newCount} for order ${order.name}`);
+  } catch (error) {
+    console.error("Failed to update label count:", error);
   }
 
   // For MI orders, set metafield to trigger email sending
