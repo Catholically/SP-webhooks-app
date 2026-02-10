@@ -1,6 +1,6 @@
 # CLAUDE.md - SP-webhooks-app
 
-> **Ultimo aggiornamento**: 2026-01-26
+> **Ultimo aggiornamento**: 2026-02-09
 
 ## ⚠️ ATTENZIONE - NOMI METAFIELD ESATTI (NON INVENTARE!)
 
@@ -45,7 +45,8 @@ Integrazione SpedirePro + Shopify per automazione spedizioni internazionali di H
 ```
 app/api/webhooks/
 ├── orders-updated/route.ts  → Riceve webhook Shopify, crea etichette
-└── spedirepro/route.ts      → Riceve webhook SpedirePro, aggiorna tracking
+├── spedirepro/route.ts      → Riceve webhook SpedirePro, aggiorna tracking
+└── weather-check/route.ts   → Controlla meteo per ordini Holy Water
 
 lib/
 ├── customs-handler.ts       → Orchestrazione documenti doganali
@@ -95,6 +96,8 @@ lib/
 | `LABEL-SENT` | Etichetta inviata via email |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
+| `FREEZE-RISK` | Rischio gelo rilevato (temp ≤ 0°C nei prossimi 8 giorni) |
+| `METEO` | Controllo meteo effettuato con rischio gelo |
 
 ## Protezione Anti-Duplicati
 
@@ -154,6 +157,33 @@ Questo permette di rigenerare doganali su ordini con etichette esistenti.
    - Auto-fulfillment ordine
 6. (Se extra-EU) Genera dichiarazione doganale
 7. (Se MI-*) Invia email con PDF
+
+## Weather Check (Meteo App)
+
+Protegge ordini Holy Water dal rischio gelo durante spedizione.
+
+**Flusso**: Shopify Flow trigger ("Order created" + line item contains "Water") → webhook `/api/webhooks/weather-check` → geocoding città (OpenWeather) → forecast 8 giorni → se temp ≤ 0°C → tag `FREEZE-RISK` + `METEO`
+
+**Endpoint**: `POST /api/webhooks/weather-check`
+
+**Payload da Flow**:
+```json
+{
+  "order_id": "{{order.id}}",
+  "order_name": "{{order.name}}",
+  "city": "{{order.shippingAddress.city}}",
+  "province_code": "{{order.shippingAddress.provinceCode}}",
+  "country_code": "{{order.shippingAddress.countryCode}}"
+}
+```
+
+**Tag aggiunti quando rischio gelo**:
+- `FREEZE-RISK` - indica rischio gelo rilevato
+- `METEO` - indica che è stato effettuato il controllo meteo
+
+**Env var**: `OPENWEATHER_API_KEY` (One Call 3.0)
+
+---
 
 ## Comandi
 

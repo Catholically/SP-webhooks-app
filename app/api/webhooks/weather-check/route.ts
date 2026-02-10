@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
  * Weather Check Webhook for Holy Water Orders
  *
  * Triggered by Shopify Flow when an order contains Holy Water.
- * Checks 8-day weather forecast for destination and adds FREEZE-RISK tag if needed.
+ * Checks 8-day weather forecast for destination and adds FREEZE-RISK and METEO tags if needed.
  *
  * Endpoint: POST /api/webhooks/weather-check
  *
@@ -33,8 +33,9 @@ const OPENWEATHER_API_KEY = process.env.OPENWEATHER_API_KEY || "";
 // Freezing threshold in Celsius
 const FREEZE_THRESHOLD_CELSIUS = 0;
 
-// Tag to add when freeze risk is detected
+// Tags to add when freeze risk is detected
 const FREEZE_RISK_TAG = "FREEZE-RISK";
+const METEO_TAG = "METEO";
 
 interface WeatherCheckPayload {
   order_id: string;
@@ -198,10 +199,12 @@ export async function POST(request: NextRequest) {
       console.log(`[${timestamp}] [Weather-Check] Freezing days: ${freezingDays.join(', ')}`);
     }
 
-    // If freeze risk, add tag to order
+    // If freeze risk, add tags to order
     let tagAdded = false;
     if (freezeRisk) {
-      tagAdded = await addTagToOrder(order_id, FREEZE_RISK_TAG, timestamp);
+      const freezeTagAdded = await addTagToOrder(order_id, FREEZE_RISK_TAG, timestamp);
+      const meteoTagAdded = await addTagToOrder(order_id, METEO_TAG, timestamp);
+      tagAdded = freezeTagAdded && meteoTagAdded;
     }
 
     return NextResponse.json({
@@ -345,6 +348,7 @@ export async function GET() {
     api: "OpenWeather One Call 3.0",
     forecast_days: 8,
     freeze_threshold_celsius: FREEZE_THRESHOLD_CELSIUS,
-    description: "Checks 8-day weather forecast for Holy Water orders and adds FREEZE-RISK tag if freezing temperatures expected"
+    tags_added: [FREEZE_RISK_TAG, METEO_TAG],
+    description: "Checks 8-day weather forecast for Holy Water orders and adds FREEZE-RISK and METEO tags if freezing temperatures expected"
   });
 }
