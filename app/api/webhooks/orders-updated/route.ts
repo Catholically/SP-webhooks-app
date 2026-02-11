@@ -534,8 +534,8 @@ export async function POST(req: Request) {
       });
     }
 
-    // 3. Update tags: remove LABEL, add LABEL-SENT
-    await updateOrderTags(order.id, ["LABEL"], ["LABEL-SENT"]);
+    // 3. Update tags: remove LABEL + todoroby, add LABEL-SENT + mom
+    await updateOrderTags(order.id, ["LABEL", "todoroby"], ["LABEL-SENT", "mom"]);
 
     console.log(`✅ [Send Label] Email sent successfully for order ${order.name}`);
 
@@ -545,6 +545,10 @@ export async function POST(req: Request) {
       order: order.name,
       recipient: 'denti.cristina@gmail.com',
       labelUrl,
+      tagsUpdated: {
+        removed: ["LABEL", "todoroby"],
+        added: ["LABEL-SENT", "mom"]
+      }
     });
   }
 
