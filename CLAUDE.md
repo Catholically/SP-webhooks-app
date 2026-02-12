@@ -1,6 +1,6 @@
 # CLAUDE.md - SP-webhooks-app
 
-> **Ultimo aggiornamento**: 2026-02-09
+> **Ultimo aggiornamento**: 2026-02-12
 
 ## ⚠️ ATTENZIONE - NOMI METAFIELD ESATTI (NON INVENTARE!)
 
@@ -19,6 +19,12 @@
 | `spedirepro` | `courier_group` | `single_line_text_field` | Gruppo corriere (UPS, FedEx) |
 | `spedirepro` | `tracking_url` | `url` | URL tracking SpedirePro |
 | `spedirepro` | `shipping_price` | `single_line_text_field` | Costo spedizione EUR |
+| `spedirepro` | `label_creation_lock` | `single_line_text_field` | Lock atomico (ISO timestamp) - previene duplicati |
+| `spedirepro` | `label_count` | `single_line_text_field` | Contatore etichette create |
+| `spedirepro` | `last_label_time` | `single_line_text_field` | Timestamp ultima etichetta (ISO) |
+| `spedirepro` | `account_type` | `single_line_text_field` | Tipo account SpedirePro (DDP o DDU) |
+| `spedirepro` | `skip_customs_auto` | `single_line_text_field` | "true" = salta generazione doganale auto |
+| `spedirepro` | `label_email_recipient` | `single_line_text_field` | Email destinatario per invio etichetta |
 
 **❌ NOMI SBAGLIATI DA NON USARE MAI:**
 - `custom.doganale` → SBAGLIATO! Usa `custom.dichiarazione_doganale`
@@ -101,9 +107,26 @@ lib/
 
 ## Protezione Anti-Duplicati
 
-Il sistema ha **due livelli** di protezione contro webhook duplicati:
-1. Controlla tag `LABEL-OK-*` (veloce, all'inizio)
-2. Controlla metafield `tracking`/`reference` (prima di creare etichetta)
+Il sistema ha **3 livelli** di protezione contro webhook duplicati:
+
+### 1. 🔒 Atomic Lock (livello 1 - più veloce)
+- **Metafield**: `spedirepro.label_creation_lock` (ISO timestamp)
+- **Come funziona**:
+  1. Prima di creare etichetta, controlla se lock esiste e < 2 minuti
+  2. Se lock attivo → **BLOCCA IMMEDIATAMENTE** (duplicate prevention)
+  3. Se no lock → imposta lock + chiama SpedirePro API
+  4. Dopo successo/errore → rimuove lock
+- **Auto-expire**: Lock si auto-cancella dopo 2 minuti (gestisce richieste appese)
+- **Vantaggio**: Blocca il secondo webhook in ~200ms, prima che chiami SpedirePro
+
+### 2. 🚨 Rate Limit (livello 2)
+- **Metafield**: `spedirepro.label_count` + `spedirepro.last_label_time`
+- **Regola**: Blocca se ≥1 etichetta creata negli ultimi 2 minuti
+- **Uso**: Previene retry rapidi dopo fallimenti temporanei
+
+### 3. ✅ Tag & Metafield Check (livello 3 - fallback)
+- Controlla tag `LABEL-OK-*` (impostato dopo creazione etichetta)
+- Controlla metafield `tracking`/`reference` (impostato da SpedirePro webhook)
 
 **IMPORTANTE - Ordine elaborazione tag in `orders-updated`:**
 1. ✅ DOG tags (MI-DOG, RM-DOG) - processati PRIMA

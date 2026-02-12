@@ -53,12 +53,28 @@ Integrazione **SpedirePro + Shopify** per automazione spedizioni internazionali.
 
 | Tag | Significato |
 |-----|-------------|
-| `LABEL-OK-MI` | Etichetta creata con successo da Milano (usato anche per prevenire duplicati) |
-| `LABEL-OK-RM` | Etichetta creata con successo da Roma (usato anche per prevenire duplicati) |
+| `LABEL-OK-MI` | Etichetta creata con successo da Milano |
+| `LABEL-OK-RM` | Etichetta creata con successo da Roma |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
 
-> **Nota**: Il sistema ha protezione anti-duplicati a due livelli: controlla i tag `LABEL-OK-*` e i metafield `tracking`/`reference`.
+### Protezione Anti-Duplicati
+
+Il sistema previene la creazione di etichette duplicate con **3 livelli di guardrail**:
+
+1. **🔒 Atomic Lock** (livello 1 - più veloce)
+   - Prima di creare un'etichetta, viene impostato `spedirepro.label_creation_lock` con timestamp
+   - Se un secondo webhook arriva mentre il lock esiste (< 2 minuti), viene **bloccato immediatamente**
+   - Lock si auto-cancella dopo 2 minuti (gestisce richieste appese)
+   - Lock viene rimosso dopo successo o errore API
+
+2. **🚨 Rate Limit** (livello 2)
+   - Blocca se ≥1 etichetta creata negli ultimi 2 minuti
+   - Traccia via metafield `spedirepro.label_count` + `spedirepro.last_label_time`
+
+3. **✅ Tag & Metafield Check** (livello 3 - fallback)
+   - Controlla tag `LABEL-OK-*` (set dopo creazione etichetta)
+   - Controlla metafield `tracking`/`reference` (set da SpedirePro webhook)
 
 ---
 
@@ -87,18 +103,23 @@ Le spedizioni con tag `MI-*` inviano automaticamente una email a `denti.cristina
 ```
 1. Aggiungi tag (es. MI-CREATE) all'ordine Shopify
 2. Webhook Shopify → /api/webhooks/orders-updated
-3. Sistema crea etichetta via SpedirePro API
-4. SpedirePro webhook → /api/webhooks/spedirepro
-5. Sistema aggiorna Shopify con:
+3. Sistema controlla:
+   - Lock atomico (spedirepro.label_creation_lock)
+   - Rate limit (label_count + last_label_time)
+   - Tag LABEL-OK-* e metafield tracking/reference
+4. Se tutto OK, imposta lock e crea etichetta via SpedirePro API
+5. SpedirePro webhook → /api/webhooks/spedirepro
+6. Sistema aggiorna Shopify con:
    - Tracking number
    - URL lettera di vettura (da Google Drive)
    - Metafields spedirepro.* + custom.costo_spedizione
    - Tag LABEL-OK-MI o LABEL-OK-RM
-6. Chiama SpedirePro API per recuperare costo spedizione
-7. Logga su Google Sheets (Data, Order, Shipment ID, Tracking, Corriere, Costo, URL, Source)
-8. Auto-fulfillment ordine
-9. (Se extra-EU) Genera dichiarazione doganale su Google Drive
-10. (Se MI-*) Invia email notifica con PDF
+   - Rimuove lock atomico
+7. Chiama SpedirePro API per recuperare costo spedizione
+8. Logga su Google Sheets (Data, Order, Shipment ID, Tracking, Corriere, Costo, URL, Source)
+9. Auto-fulfillment ordine
+10. (Se extra-EU) Genera dichiarazione doganale su Google Drive
+11. (Se MI-*) Invia email notifica con PDF
 ```
 
 ---
