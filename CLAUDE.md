@@ -99,13 +99,18 @@ lib/
 |-----|-------------|
 | `LABEL-OK-MI` | Etichetta creata da Milano (previene duplicati) |
 | `LABEL-OK-RM` | Etichetta creata da Roma (previene duplicati) |
-| `UPS` | Aggiunto automaticamente per ordini MI |
+| `UPS` | Aggiunto automaticamente per ordini MI e RM |
 | `mom` | Aggiunto automaticamente per ordini MI |
+| `todoroby` | Aggiunto automaticamente per ordini RM |
 | `LABEL-SENT` | Etichetta inviata via email |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
 | `FREEZE-RISK` | Rischio gelo rilevato (temp ≤ 0°C nei prossimi 8 giorni) |
 | `METEO` | Controllo meteo effettuato con rischio gelo |
+
+**Tag automatici per magazzino:**
+- `MI-CREATE` / `MI-CREATE-DDU` / `MI-CREATE-NODOG` / `MI-CREATE-DDU-NODOG` → aggiunge: `LABEL-OK-MI`, `UPS`, `mom`
+- `RM-CREATE` / `RM-CREATE-DDU` / `RM-CREATE-NODOG` / `RM-CREATE-DDU-NODOG` → aggiunge: `LABEL-OK-RM`, `todoroby`, `UPS`
 
 ## Protezione Anti-Duplicati
 
