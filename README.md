@@ -55,8 +55,12 @@ Integrazione **SpedirePro + Shopify** per automazione spedizioni internazionali.
 |-----|-------------|
 | `LABEL-OK-MI` | Etichetta creata con successo da Milano |
 | `LABEL-OK-RM` | Etichetta creata con successo da Roma |
+| `UPS` | Aggiunto automaticamente per ordini MI |
+| `mom` | Aggiunto automaticamente per ordini MI |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
+
+**Nota**: Gli ordini `MI-CREATE` e `MI-CREATE-DDU` ricevono automaticamente i tag `LABEL-OK-MI`, `UPS` e `mom`.
 
 ### Protezione Anti-Duplicati
 

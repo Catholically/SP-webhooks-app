@@ -99,6 +99,8 @@ lib/
 |-----|-------------|
 | `LABEL-OK-MI` | Etichetta creata da Milano (previene duplicati) |
 | `LABEL-OK-RM` | Etichetta creata da Roma (previene duplicati) |
+| `UPS` | Aggiunto automaticamente per ordini MI |
+| `mom` | Aggiunto automaticamente per ordini MI |
 | `LABEL-SENT` | Etichetta inviata via email |
 | `MI-DOG-DONE` | Doganale generata da Milano |
 | `RM-DOG-DONE` | Doganale generata da Roma |
