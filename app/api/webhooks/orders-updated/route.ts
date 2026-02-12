@@ -976,10 +976,12 @@ export async function POST(req: Request) {
   // Label created successfully - update tags (remove MI-CREATE/RM-CREATE, add LABEL-OK-MI or LABEL-OK-RM)
   const labelTag = `LABEL-OK-${senderCode}`;
 
-  // For MI orders, also add UPS and mom tags
+  // Add warehouse-specific tags
   const tagsToAdd = [labelTag];
   if (senderCode === "MI") {
     tagsToAdd.push("UPS", "mom");
+  } else if (senderCode === "RM") {
+    tagsToAdd.push("todoroby", "UPS");
   }
 
   console.log(`✅ Label created! Now updating tags: remove [${usedTag}], add [${tagsToAdd.join(", ")}]`);
