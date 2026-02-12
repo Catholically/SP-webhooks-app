@@ -329,6 +329,135 @@ export async function sendWrongLabelTagAlert(
 }
 
 /**
+ * Send an alert when SpedirePro API fails
+ * @param orderName - Order name
+ * @param orderNumber - Order number
+ * @param countryCode - Country code
+ * @param accountType - Account type (DDP or DDU)
+ * @param httpStatus - HTTP status code
+ * @param apiResponse - API error response
+ * @param requestBody - Request body sent to API
+ */
+export async function sendApiErrorAlert(
+  orderName: string,
+  orderNumber: string,
+  countryCode: string,
+  accountType: string,
+  httpStatus: number,
+  apiResponse: any,
+  requestBody: any
+): Promise<void> {
+  const alertEmail = process.env.ALERT_EMAIL;
+
+  if (!alertEmail) {
+    console.error('[Email Alert] ALERT_EMAIL not configured');
+    return;
+  }
+
+  const resend = getResendClient();
+  if (!resend) {
+    return;
+  }
+
+  const subject = `🚨 SpedirePro API Error - Order ${orderName} (${countryCode})`;
+
+  // Format API errors nicely
+  let errorDetails = '';
+  if (apiResponse?.errors) {
+    errorDetails = '<ul>';
+    for (const [field, messages] of Object.entries(apiResponse.errors)) {
+      if (Array.isArray(messages)) {
+        errorDetails += `<li><strong>${field}:</strong> ${messages.join(', ')}</li>`;
+      }
+    }
+    errorDetails += '</ul>';
+  } else if (apiResponse?.message) {
+    errorDetails = `<p>${apiResponse.message}</p>`;
+  } else if (apiResponse?.raw) {
+    errorDetails = `<pre>${apiResponse.raw}</pre>`;
+  } else {
+    errorDetails = `<pre>${JSON.stringify(apiResponse, null, 2)}</pre>`;
+  }
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+          .header { background-color: #dc3545; color: white; padding: 15px; border-radius: 5px; }
+          .content { background-color: #f9f9f9; padding: 20px; border-radius: 5px; margin-top: 20px; }
+          .error-box { background-color: #f8d7da; border-left: 4px solid #dc3545; padding: 15px; margin: 15px 0; }
+          .info { margin: 10px 0; }
+          .label { font-weight: bold; }
+          .code { background-color: #f4f4f4; padding: 10px; border-radius: 3px; overflow-x: auto; font-size: 12px; }
+          pre { white-space: pre-wrap; word-wrap: break-word; }
+          ul { margin: 5px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h2>🚨 SpedirePro API Error</h2>
+          </div>
+          <div class="content">
+            <div class="error-box">
+              <p><strong>SpedirePro API returned an error:</strong></p>
+              <p><strong>HTTP Status:</strong> ${httpStatus}</p>
+              <p><strong>Account Type:</strong> ${accountType}</p>
+            </div>
+
+            <h3>Order Information:</h3>
+            <div class="info">
+              <p><span class="label">Order Name:</span> ${orderName}</p>
+              <p><span class="label">Order Number:</span> ${orderNumber}</p>
+              <p><span class="label">Destination:</span> ${countryCode}</p>
+              <p><span class="label">Account:</span> ${accountType}</p>
+            </div>
+
+            <h3>API Error Response:</h3>
+            <div class="code">
+              ${errorDetails}
+            </div>
+
+            <h3>Request Payload:</h3>
+            <div class="code">
+              <pre>${JSON.stringify(requestBody, null, 2)}</pre>
+            </div>
+
+            <h3>📋 Action Required:</h3>
+            <ol>
+              <li>Review the error details above</li>
+              <li>Check if any required fields are missing or invalid</li>
+              <li>Fix the issue (e.g., update order data in Shopify)</li>
+              <li>Remove and re-add the CREATE tag to retry</li>
+            </ol>
+
+            <p style="margin-top: 20px; background-color: #fff3cd; padding: 10px; border-radius: 5px;">
+              <strong>Note:</strong> The label was NOT created. The order has not been processed.
+            </p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  try {
+    const result = await resend.emails.send({
+      from: 'SpedirePro Alerts <onboarding@resend.dev>',
+      to: alertEmail,
+      subject: subject,
+      html: htmlContent,
+    });
+
+    console.log(`[Email Alert] Sent API error alert for order ${orderName}:`, result);
+  } catch (emailError) {
+    console.error('[Email Alert] Failed to send email:', emailError);
+  }
+}
+
+/**
  * Send a success notification email (optional)
  * @param orderName - Order name
  * @param tracking - Tracking number

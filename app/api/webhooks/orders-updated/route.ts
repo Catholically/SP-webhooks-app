@@ -883,6 +883,8 @@ export async function POST(req: Request) {
   }
 
   console.log(`Creating label on ${accountType} account for ${to.country_code}`);
+  console.log(`🔍 [DEBUG] Order: ${order.name}, Country: ${to.country_code}, isDDU: ${isDDU}, Account: ${accountType}`);
+  console.log(`🔍 [DEBUG] Receiver: ${to.city}, ${to.zip}, Province: ${receiverProvince}, Phone: ${receiverPhone}`);
 
   const r = await fetch(`${SPRO_API_BASE}/create-label`, {
     method: "POST",
@@ -898,7 +900,32 @@ export async function POST(req: Request) {
   if (!r.ok) {
     let parsed: any;
     try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
-    console.error("orders-updated: SpedirePro error", { status: r.status, url: `${SPRO_API_BASE}/create-label`, body: parsed });
+
+    // Enhanced error logging
+    console.error(`❌ [SPEDIREPRO API ERROR] Order: ${order.name}`);
+    console.error(`   Status: ${r.status}`);
+    console.error(`   Account: ${accountType}`);
+    console.error(`   Country: ${to.country_code}`);
+    console.error(`   Response:`, JSON.stringify(parsed, null, 2));
+    console.error(`   Request body:`, JSON.stringify(sproBody, null, 2));
+
+    // Send email alert for SpedirePro API failures
+    try {
+      const { sendApiErrorAlert } = await import('@/lib/email-alerts');
+      await sendApiErrorAlert(
+        order.name,
+        order.name.replace('#', ''),
+        to.country_code,
+        accountType,
+        r.status,
+        parsed,
+        sproBody
+      );
+      console.log(`📧 Error alert email sent for order ${order.name}`);
+    } catch (emailError) {
+      console.error(`Failed to send error alert email:`, emailError);
+    }
+
     return json(200, { ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
   }
 
