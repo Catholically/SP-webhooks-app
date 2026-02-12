@@ -672,6 +672,7 @@ export async function POST(req: Request) {
         reference: metafield(namespace: "spro", key: "reference") { value }
         labelCount: metafield(namespace: "spedirepro", key: "label_count") { value }
         lastLabelTime: metafield(namespace: "spedirepro", key: "last_label_time") { value }
+        creationLock: metafield(namespace: "spedirepro", key: "label_creation_lock") { value }
       }
     }`;
 
@@ -693,20 +694,44 @@ export async function POST(req: Request) {
     const existingReference = checkData?.data?.order?.reference?.value;
     const labelCount = parseInt(checkData?.data?.order?.labelCount?.value || "0", 10);
     const lastLabelTime = checkData?.data?.order?.lastLabelTime?.value;
+    const creationLock = checkData?.data?.order?.creationLock?.value;
 
-    // 🚨 RATE LIMIT: Block if more than 2 labels created in last 5 minutes
-    if (labelCount >= 2 && lastLabelTime) {
+    // 🔒 ATOMIC LOCK: Check if another process is currently creating a label
+    if (creationLock) {
+      const lockTime = new Date(creationLock).getTime();
+      const timeSinceLock = Date.now() - lockTime;
+      const twoMinutes = 2 * 60 * 1000;
+
+      if (timeSinceLock < twoMinutes) {
+        console.error(`🔒 LOCKED: Order ${order.name} has active creation lock (${Math.round(timeSinceLock / 1000)}s old)`);
+        console.error(`Another webhook is currently creating a label for this order. Blocking duplicate request.`);
+        return json(200, {
+          ok: false,
+          blocked: true,
+          reason: "creation-locked",
+          order: order.name,
+          lockAge: Math.round(timeSinceLock / 1000),
+          message: `Label creation in progress by another process. Lock expires in ${Math.round((twoMinutes - timeSinceLock) / 1000)}s.`
+        });
+      } else {
+        // Lock expired (stale from hung request) - will be cleared and recreated
+        console.log(`⚠️ Stale lock detected (${Math.round(timeSinceLock / 1000)}s old), will clear and proceed`);
+      }
+    }
+
+    // 🚨 RATE LIMIT: Block if 1 or more labels created in last 2 minutes (stricter than before)
+    if (labelCount >= 1 && lastLabelTime) {
       const timeSinceLastLabel = Date.now() - new Date(lastLabelTime).getTime();
-      const fiveMinutes = 5 * 60 * 1000;
-      if (timeSinceLastLabel < fiveMinutes) {
-        console.error(`🚨 RATE LIMITED: Order ${order.name} already has ${labelCount} labels in last 5 min!`);
+      const twoMinutes = 2 * 60 * 1000;
+      if (timeSinceLastLabel < twoMinutes) {
+        console.error(`🚨 RATE LIMITED: Order ${order.name} already has ${labelCount} label(s) in last 2 min!`);
         return json(200, {
           ok: false,
           blocked: true,
           reason: "rate-limited",
           order: order.name,
           labelCount,
-          message: `Rate limited: ${labelCount} labels created recently. Wait 5 minutes or remove RM-CREATE/MI-CREATE tag manually.`
+          message: `Rate limited: ${labelCount} label(s) created recently. Wait 2 minutes or remove RM-CREATE/MI-CREATE tag manually.`
         });
       }
     }
@@ -886,6 +911,17 @@ export async function POST(req: Request) {
   console.log(`🔍 [DEBUG] Order: ${order.name}, Country: ${to.country_code}, isDDU: ${isDDU}, Account: ${accountType}`);
   console.log(`🔍 [DEBUG] Receiver: ${to.city}, ${to.zip}, Province: ${receiverProvince}, Phone: ${receiverPhone}`);
 
+  // 🔒 SET ATOMIC LOCK: Must be set BEFORE calling SpedirePro API to prevent race conditions
+  const lockTimestamp = new Date().toISOString();
+  try {
+    console.log(`🔒 Setting creation lock for order ${order.name} at ${lockTimestamp}`);
+    await setOrderMetafield(order.id, "spedirepro", "label_creation_lock", lockTimestamp);
+    console.log(`✅ Lock set successfully`);
+  } catch (error) {
+    console.error("⚠️ Failed to set creation lock (proceeding anyway):", error);
+    // Continue anyway - better to risk duplicate than block legitimate request
+  }
+
   const r = await fetch(`${SPRO_API_BASE}/create-label`, {
     method: "POST",
     headers: {
@@ -926,6 +962,14 @@ export async function POST(req: Request) {
       console.error(`Failed to send error alert email:`, emailError);
     }
 
+    // 🔓 CLEAR LOCK on API failure
+    try {
+      console.log(`🔓 Clearing creation lock due to API error`);
+      await setOrderMetafield(order.id, "spedirepro", "label_creation_lock", "");
+    } catch (error) {
+      console.error("Failed to clear lock:", error);
+    }
+
     return json(200, { ok: false, status: r.status, reason: "create-label-failed", spro_response: parsed });
   }
 
@@ -938,6 +982,16 @@ export async function POST(req: Request) {
   } catch (error) {
     console.error("❌ Failed to update order tags:", error);
     // Don't fail the whole request if tag update fails
+  }
+
+  // 🔓 CLEAR LOCK after successful label creation
+  try {
+    console.log(`🔓 Clearing creation lock after successful label creation`);
+    await setOrderMetafield(order.id, "spedirepro", "label_creation_lock", "");
+    console.log(`✅ Lock cleared successfully`);
+  } catch (error) {
+    console.error("Failed to clear lock:", error);
+    // Don't fail the whole request if lock clear fails
   }
 
   // Save account type (DDU or DDP) in metafield for webhook to use correct API key

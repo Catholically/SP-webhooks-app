@@ -23,7 +23,13 @@
       "Bash(git -C \"C:\\\\AI_Projects\\\\Dashboard\" commit -m \"v1.6 - Add Spedizioni su Drive link\")",
       "WebFetch(domain:www.indexnow.org)",
       "WebFetch(domain:www.catholically.com)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "mcp__supabase__execute_sql",
+      "mcp__vercel__get_runtime_logs",
+      "Bash(git reset:*)",
+      "Bash(git restore:*)",
+      "Bash(/tmp/create-label-ch.json << 'EOF'\n{\n  \"merchant_reference\": \"#37205182026\",\n  \"sender\": {\n    \"name\": \"Roberta Parma\",\n    \"email\": \"robykz@gmail.com\",\n    \"phone\": \"+393935148686\",\n    \"country\": \"IT\",\n    \"province\": \"MI\",\n    \"city\": \"Inzago\",\n    \"postcode\": \"20065\",\n    \"street\": \"Via degli Oleandri 3\"\n  },\n  \"receiver\": {\n    \"name\": \"Ramin Daenzer\",\n    \"email\": \"info@daenzer.ch\",\n    \"phone\": \"0794455889\",\n    \"country\": \"CH\",\n    \"province\": \"AG\",\n    \"city\": \"Kuenten\",\n    \"postcode\": \"5444\",\n    \"street\": \"Fabrikstr. 3\",\n    \"attention_name\": \"Bildhauer-Atelier Daenzer\"\n  },\n  \"packages\": [\n    {\n      \"weight\": 0.5,\n      \"width\": 12,\n      \"height\": 5,\n      \"depth\": 20\n    }\n  ],\n  \"content\": {\n    \"description\": \"Religious items\",\n    \"amount\": 10.0\n  },\n  \"courier\": \"UPS\"\n}\nEOF)",
+      "Bash(/tmp/create-label-ch2.json << 'EOF'\n{\n  \"merchant_reference\": \"#37205182026\",\n  \"sender\": {\n    \"name\": \"Roberta Parma\",\n    \"email\": \"robykz@gmail.com\",\n    \"phone\": \"+393935148686\",\n    \"country\": \"IT\",\n    \"province\": \"MI\",\n    \"city\": \"Inzago\",\n    \"postcode\": \"20065\",\n    \"street\": \"Via degli Oleandri 3\"\n  },\n  \"receiver\": {\n    \"name\": \"Ramin Daenzer\",\n    \"email\": \"info@daenzer.ch\",\n    \"phone\": \"0794455889\",\n    \"country\": \"CH\",\n    \"province\": \"AG\",\n    \"city\": \"Kuenten\",\n    \"postcode\": \"5444\",\n    \"street\": \"Fabrikstr. 3\",\n    \"attention_name\": \"Atelier Daenzer\"\n  },\n  \"packages\": [\n    {\n      \"weight\": 0.5,\n      \"width\": 12,\n      \"height\": 5,\n      \"depth\": 20\n    }\n  ],\n  \"content\": {\n    \"description\": \"Religious items\",\n    \"amount\": 10.0\n  },\n  \"courier\": \"UPS\"\n}\nEOF)"
     ]
   }
 }
