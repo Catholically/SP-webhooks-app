@@ -975,9 +975,16 @@ export async function POST(req: Request) {
 
   // Label created successfully - update tags (remove MI-CREATE/RM-CREATE, add LABEL-OK-MI or LABEL-OK-RM)
   const labelTag = `LABEL-OK-${senderCode}`;
-  console.log(`✅ Label created! Now updating tags: remove [${usedTag}], add [${labelTag}]`);
+
+  // For MI orders, also add UPS and mom tags
+  const tagsToAdd = [labelTag];
+  if (senderCode === "MI") {
+    tagsToAdd.push("UPS", "mom");
+  }
+
+  console.log(`✅ Label created! Now updating tags: remove [${usedTag}], add [${tagsToAdd.join(", ")}]`);
   try {
-    await updateOrderTags(order.id, [usedTag], [labelTag]);
+    await updateOrderTags(order.id, [usedTag], tagsToAdd);
     console.log(`✅ Tags updated successfully for order ${order.name}`);
   } catch (error) {
     console.error("❌ Failed to update order tags:", error);
