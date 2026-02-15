@@ -268,7 +268,7 @@ async function fulfill(foId: string, tracking: string, trackingUrl?: string, com
       fulfillmentCreateV2(fulfillment: {
         lineItemsByFulfillmentOrder: { fulfillmentOrderId: $fulfillmentOrderId }
         trackingInfo: $trackingInfo
-        notifyCustomer: false
+        notifyCustomer: true
       }) {
         fulfillment { id }
         userErrors { field message }
