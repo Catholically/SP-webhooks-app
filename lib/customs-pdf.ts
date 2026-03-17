@@ -5,6 +5,28 @@ import type { CustomsLineItem, OrderCustomsData } from './shopify-customs';
 export const DOCUMENT_TYPE_INVOICE = 'invoice';
 export const DOCUMENT_TYPE_DECLARATION = 'export_declaration';
 
+/**
+ * Word-wrap text to fit within a given pixel width
+ */
+function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+    if (testWidth > maxWidth && currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+    } else {
+      currentLine = testLine;
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+  return lines;
+}
+
 interface CustomsDeclarationData {
   // Company info
   companyName: string;
@@ -231,13 +253,12 @@ export async function generateCustomsDeclarationPDF(
     }
 
     const description = item.customsDescription || item.title;
-    // Truncate description if too long
-    const maxDescLength = 35;
-    const truncatedDesc = description.length > maxDescLength
-      ? description.substring(0, maxDescLength) + '...'
-      : description;
+    // Word-wrap description to fit within column width (col1 to col2 with padding)
+    const maxDescWidth = col2 - col1 - 5; // available width for description
+    const descLines = wrapText(description, fontRegular, 9, maxDescWidth);
 
-    page.drawText(truncatedDesc, {
+    // Draw first line of description aligned with other columns
+    page.drawText(descLines[0], {
       x: col1,
       y: rowY,
       size: 9,
@@ -279,6 +300,18 @@ export async function generateCustomsDeclarationPDF(
       font: fontRegular,
       color: rgb(0, 0, 0),
     });
+
+    // Draw remaining description lines below
+    for (let i = 1; i < descLines.length; i++) {
+      rowY -= 12;
+      page.drawText(descLines[i], {
+        x: col1,
+        y: rowY,
+        size: 9,
+        font: fontRegular,
+        color: rgb(0, 0, 0),
+      });
+    }
     rowY -= 15;
   }
 
@@ -674,15 +707,19 @@ export async function generateInvoicePDF(
 
   for (const item of data.lineItems) {
     const description = item.customsDescription || item.title;
-    const maxDescLength = 35;
-    const truncatedDesc = description.length > maxDescLength ? description.substring(0, maxDescLength) + '...' : description;
+    const maxDescWidth = col2 - col1 - 5;
+    const descLines = wrapText(description, fontRegular, 9, maxDescWidth);
 
-    page.drawText(truncatedDesc, { x: col1, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
+    page.drawText(descLines[0], { x: col1, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
     page.drawText(`×${item.quantity}`, { x: col2, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
     page.drawText(item.hsCode, { x: col3, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
     page.drawText(item.origin, { x: col4, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
     page.drawText(`$${item.price.toFixed(2)}`, { x: col5, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
     page.drawText(`$${(item.price * item.quantity).toFixed(2)}`, { x: col6, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
+    for (let i = 1; i < descLines.length; i++) {
+      rowY -= 12;
+      page.drawText(descLines[i], { x: col1, y: rowY, size: 9, font: fontRegular, color: rgb(0, 0, 0) });
+    }
     rowY -= 15;
   }
 
