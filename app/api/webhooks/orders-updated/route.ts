@@ -1,6 +1,6 @@
 export const runtime = "nodejs";
 
-import { canAutoProcessLabel } from '@/lib/eu-countries';
+import { canAutoProcessLabel, isUSA, isEUCountry } from '@/lib/eu-countries';
 import { sendUnsupportedCountryAlert } from '@/lib/email-alerts';
 
 // ---------- utils & env compat ----------
@@ -889,8 +889,29 @@ export async function POST(req: Request) {
   // This is the correct field per SpedirePro API documentation
   sproBody.receiver.attention_name = to.company ? to.company.substring(0, 27) : "";
 
-  if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
-  else sproBody.courier_fallback = true;
+  // Courier selection by country (DDP account only)
+  // DDU orders keep DEFAULT_CARRIER_NAME or fallback
+  if (!isDDU) {
+    const countryCode = to.country_code?.toUpperCase() || "";
+    if (isUSA(countryCode)) {
+      sproBody.courier = "UPS_NEW_E"; // UPS EXPRESS PROMO 2026
+      console.log(`[Courier] USA → UPS_NEW_E (UPS Express Promo 2026)`);
+    } else if (isEUCountry(countryCode)) {
+      sproBody.courier = "UPS_NEW_S"; // UPS STANDARD PROMO 2026
+      console.log(`[Courier] EU (${countryCode}) → UPS_NEW_S (UPS Standard Promo 2026)`);
+    } else if (DEFAULT_CARRIER_NAME) {
+      sproBody.courier = DEFAULT_CARRIER_NAME;
+      console.log(`[Courier] ${countryCode} → DEFAULT_CARRIER_NAME: ${DEFAULT_CARRIER_NAME}`);
+    } else {
+      sproBody.courier_fallback = true;
+      console.log(`[Courier] ${countryCode} → courier_fallback (no specific carrier)`);
+    }
+  } else {
+    // DDU account: use default carrier or fallback
+    if (DEFAULT_CARRIER_NAME) sproBody.courier = DEFAULT_CARRIER_NAME;
+    else sproBody.courier_fallback = true;
+    console.log(`[Courier] DDU → ${DEFAULT_CARRIER_NAME || 'courier_fallback'}`);
+  }
 
   // Log the complete request body to debug C/O field issue
   console.log('[DEBUG] SpedirePro request body:', JSON.stringify(sproBody, null, 2));
