@@ -461,6 +461,95 @@ export async function POST(req: Request) {
     console.log("[DEBUG] ⚠️ No fulfillment orders found - skipping fulfillment");
   }
 
+  // ---------- Combine: propagate tracking to linked orders ----------
+  const linkedOrdersRaw = await getOrderMetafield(orderGid, "combine", "linked_orders");
+  if (linkedOrdersRaw) {
+    console.log(`[Combine] Found linked orders: ${linkedOrdersRaw}`);
+    const linkedNames = linkedOrdersRaw.split(",").map((n: string) => n.trim()).filter(Boolean);
+
+    for (const linkedName of linkedNames) {
+      // Skip the current order
+      if (linkedName === merchantRef || linkedName === `#${merchantRef}` || `#${linkedName}` === merchantRef) continue;
+
+      const cleanName = linkedName.replace("#", "");
+      const linkedIdNum = await findOrderIdByName(cleanName);
+      if (!linkedIdNum) {
+        console.log(`[Combine] Could not find linked order ${linkedName}, skipping`);
+        continue;
+      }
+
+      const linkedGid = `gid://shopify/Order/${linkedIdNum}`;
+      console.log(`[Combine] Propagating tracking to ${linkedName} (${linkedGid})`);
+
+      // Copy all metafields (tracking, label, courier, cost)
+      await metafieldsSet(linkedGid, metafields, body?.reference, shippingPrice);
+
+      // Also copy customs metafields if they exist on the primary order
+      const invoiceUrl = await getOrderMetafield(orderGid, "custom", "invoice");
+      const dogUrl = await getOrderMetafield(orderGid, "custom", "dichiarazione_doganale");
+      const customsMeta: Array<{ ownerId: string; namespace: string; key: string; type: string; value: string }> = [];
+
+      if (invoiceUrl) {
+        customsMeta.push({
+          ownerId: linkedGid,
+          namespace: "custom",
+          key: "invoice",
+          type: "url",
+          value: invoiceUrl,
+        });
+      }
+      if (dogUrl) {
+        customsMeta.push({
+          ownerId: linkedGid,
+          namespace: "custom",
+          key: "dichiarazione_doganale",
+          type: "url",
+          value: dogUrl,
+        });
+      }
+
+      if (customsMeta.length > 0) {
+        await shopifyFetch("/graphql.json", {
+          method: "POST",
+          body: JSON.stringify({
+            query: `mutation($metafields: [MetafieldsSetInput!]!) {
+              metafieldsSet(metafields: $metafields) {
+                metafields { key value }
+                userErrors { field message }
+              }
+            }`,
+            variables: { metafields: customsMeta },
+          }),
+        });
+        console.log(`[Combine] Copied customs docs to ${linkedName}`);
+      }
+
+      // Fulfill linked order
+      const linkedFoIds = await getAllOpenFulfillmentOrders(linkedGid);
+      for (const foId of linkedFoIds) {
+        try {
+          await fulfill(foId, tracking, trackingUrl, courierGroup);
+          console.log(`[Combine] ✅ Fulfilled linked order ${linkedName} (${foId})`);
+        } catch (err) {
+          console.error(`[Combine] ❌ Fulfillment error for linked order ${linkedName}:`, err);
+        }
+      }
+
+      // Add LABEL-OK tag to linked order (prevent duplicate processing)
+      await shopifyFetch("/graphql.json", {
+        method: "POST",
+        body: JSON.stringify({
+          query: `mutation($id: ID!, $tags: [String!]!) {
+            tagsAdd(id: $id, tags: $tags) { userErrors { field message } }
+          }`,
+          variables: { id: linkedGid, tags: ["LABEL-OK-COMBINE"] },
+        }),
+      });
+
+      console.log(`[Combine] ✅ Fully propagated to ${linkedName}`);
+    }
+  }
+
   // Process customs declaration (await to ensure it completes)
   // This will check if destination is extra-EU and generate customs docs if needed
   const reference = body?.reference || "";
