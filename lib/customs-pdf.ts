@@ -6,24 +6,26 @@ export const DOCUMENT_TYPE_INVOICE = 'invoice';
 export const DOCUMENT_TYPE_DECLARATION = 'export_declaration';
 
 /**
- * Word-wrap text to fit within a given pixel width
+ * Word-wrap text to fit within a given pixel width.
+ * Honors explicit "\n" in the input as a forced line break before width-based wrapping.
  */
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
-  const words = text.split(' ');
   const lines: string[] = [];
-  let currentLine = '';
-
-  for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    const testWidth = font.widthOfTextAtSize(testLine, fontSize);
-    if (testWidth > maxWidth && currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
-    } else {
-      currentLine = testLine;
+  for (const segment of text.split('\n')) {
+    const words = segment.split(' ');
+    let currentLine = '';
+    for (const word of words) {
+      const testLine = currentLine ? `${currentLine} ${word}` : word;
+      const testWidth = font.widthOfTextAtSize(testLine, fontSize);
+      if (testWidth > maxWidth && currentLine) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = testLine;
+      }
     }
+    lines.push(currentLine);
   }
-  if (currentLine) lines.push(currentLine);
   return lines;
 }
 

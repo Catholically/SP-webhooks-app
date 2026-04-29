@@ -30,6 +30,19 @@ export interface CustomsLineItem {
   origin: string; // Always "ITALY"
 }
 
+// FDA-safe override: Holy Water variants must always render the non-consumable
+// sacramental description on customs documents, regardless of metafield drift.
+// Newline forces a two-line layout in the PDF (wrapText honors \n).
+const HOLY_WATER_OVERRIDE_DESCRIPTION =
+  'Blessed Religious Souvenir 30ml\n(non-consumable, sacramental)';
+
+function isHolyWaterItem(productType: string | null | undefined, hsCode: string | null | undefined): boolean {
+  const pt = (productType || '').trim().toLowerCase();
+  if (pt === 'holy water' || pt === 'bundle holy water') return true;
+  if ((hsCode || '').startsWith('2201')) return true;
+  return false;
+}
+
 export interface OrderCustomsData {
   orderName: string;
   orderNumber: string;
@@ -201,12 +214,17 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
     // Weight data not available via GraphQL API on variants
     const weightKg = 0.1;
 
+    const baseDescription = customsDescription || node.title || product.title;
+    const finalCustomsDescription = isHolyWaterItem(product.productType, hsCode)
+      ? HOLY_WATER_OVERRIDE_DESCRIPTION
+      : baseDescription;
+
     lineItems.push({
       title: node.title || product.title,
       quantity: node.quantity || 1,
       price: price,
       hsCode: hsCode || "",
-      customsDescription: customsDescription || node.title || product.title,
+      customsDescription: finalCustomsDescription,
       weight: weightKg,
       origin: "ITALY",
     });
