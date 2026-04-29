@@ -35,12 +35,14 @@ export interface CustomsLineItem {
 // Newline forces a two-line layout in the PDF (wrapText honors \n).
 const HOLY_WATER_OVERRIDE_DESCRIPTION =
   'Blessed Religious Souvenir 30ml\n(non-consumable, sacramental)';
+const HOLY_WATER_BUNDLE_OVERRIDE_DESCRIPTION =
+  'Blessed Religious Souvenir Set\n(non-consumable, sacramental)';
 
-function isHolyWaterItem(productType: string | null | undefined, hsCode: string | null | undefined): boolean {
+function getHolyWaterOverride(productType: string | null | undefined, hsCode: string | null | undefined): string | null {
   const pt = (productType || '').trim().toLowerCase();
-  if (pt === 'holy water' || pt === 'bundle holy water') return true;
-  if ((hsCode || '').startsWith('2201')) return true;
-  return false;
+  if (pt === 'bundle holy water') return HOLY_WATER_BUNDLE_OVERRIDE_DESCRIPTION;
+  if (pt === 'holy water' || (hsCode || '').startsWith('2201')) return HOLY_WATER_OVERRIDE_DESCRIPTION;
+  return null;
 }
 
 export interface OrderCustomsData {
@@ -74,7 +76,10 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
               title
               quantity
               variant {
-                harmonizedSystemCode: metafield(namespace: "global", key: "harmonized_system_code") {
+                inventoryItem {
+                  harmonizedSystemCode
+                }
+                legacyHsMetafield: metafield(namespace: "global", key: "harmonized_system_code") {
                   value
                 }
                 customsCost: metafield(namespace: "custom", key: "cost") {
@@ -181,10 +186,12 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
       continue; // Skip this item, don't include in customs declaration
     }
 
-    // Extract HS Code (from variant.global.harmonized_system_code)
-    const hsCode = variant.harmonizedSystemCode?.value?.trim();
+    // Extract HS Code: prefer inventoryItem.harmonizedSystemCode (modern, since 2025),
+    // fallback to legacy global.harmonized_system_code metafield (older variants)
+    const hsCode = variant.inventoryItem?.harmonizedSystemCode?.trim()
+      || variant.legacyHsMetafield?.value?.trim();
     if (!hsCode) {
-      missingData.push(`${node.title}: Missing HS Code (metafield global.harmonized_system_code on variant)`);
+      missingData.push(`${node.title}: Missing HS Code (set it on the inventory item, e.g. via Shopify admin > Variant > Customs information)`);
     }
 
     // Extract customs cost (USD) - from variant metafield
@@ -215,9 +222,8 @@ export async function fetchOrderCustomsData(orderId: string): Promise<OrderCusto
     const weightKg = 0.1;
 
     const baseDescription = customsDescription || node.title || product.title;
-    const finalCustomsDescription = isHolyWaterItem(product.productType, hsCode)
-      ? HOLY_WATER_OVERRIDE_DESCRIPTION
-      : baseDescription;
+    const finalCustomsDescription =
+      getHolyWaterOverride(product.productType, hsCode) ?? baseDescription;
 
     lineItems.push({
       title: node.title || product.title,
